@@ -89,6 +89,7 @@ if DATABASE_URL:
             conn_health_checks=True,
         )
     }
+    DATABASES['default']['ENGINE'] = 'django.db.backends.postgresql'
 else:
     DATABASES = {
         'default': {
