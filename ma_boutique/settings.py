@@ -139,10 +139,11 @@ SIMPLE_JWT = {
 CORS_ALLOW_ALL_ORIGINS = True  # ⚡ Autoriser Flutter
 CORS_ALLOW_CREDENTIALS = True
 
-CSRF_TRUSTED_ORIGINS = [
-    'https://*.railway.app',
-    'https://*.up.railway.app',
-]
+CSRF_TRUSTED_ORIGINS = config (
+    'CSRF_TRUSTED_ORIGINS',
+    default='https://*.railway.app',
+    cast=Csv(),
+)
 
 # ═══════════════════════════════════════════════════════════
 # INTERNATIONALISATION
