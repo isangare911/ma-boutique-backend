@@ -24,15 +24,27 @@ class Shop(models.Model):
     subscription_plan = models.CharField(
         max_length=20,
         choices=[
-            ('TRIAL', 'Essai'),
+            ('TRIAL', 'Essai gratuit'),
             ('ESSENTIEL', 'Essentiel'),
             ('PRO', 'Pro'),
             ('BUSINESS', 'Business'),
         ],
         default='TRIAL',
     )
+    subscription_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('TRIAL', 'Période d\'essai'),
+            ('ACTIVE', 'Actif'),
+            ('GRACE_PERIOD', 'Période de grâce'),
+            ('EXPIRED', 'Expiré'),
+        ],
+        default='TRIAL',
+    )
+
     subscription_start = models.DateTimeField(default=timezone.now)
     subscription_end = models.DateTimeField(blank=True, null=True)
+    last_payment_date = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)

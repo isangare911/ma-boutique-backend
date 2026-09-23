@@ -3,6 +3,7 @@ from django.contrib.auth import authenticate
 from .models import User, Shop
 
 
+
 class ShopSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shop
@@ -83,3 +84,81 @@ class LoginSerializer(serializers.Serializer):
         
         data['user'] = user
         return data
+    
+from .subscription_service import SubscriptionService
+
+
+class SubscriptionSerializer(serializers.ModelSerializer):
+    days_remaining = serializers.SerializerMethodField()
+    is_active = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Shop
+        fields = [
+            'id', 'subscription_plan', 'subscription_status',
+            'subscription_start', 'subscription_end',
+            'days_remaining', 'is_active', 'last_payment_date',
+        ]
+
+    def get_days_remaining(self, obj):
+        return SubscriptionService.get_days_remaining(obj)
+
+    def get_is_active(self, obj):
+        return SubscriptionService.is_active(obj)
+
+
+class SubscriptionPlanSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    name = serializers.CharField()
+    price_monthly = serializers.IntegerField()
+    price_yearly = serializers.IntegerField()
+    features = serializers.ListField(child=serializers.CharField())
+
+
+# ═══════════════════════════════════════════════════════════
+# LISTE DES PLANS DISPONIBLES
+# ═══════════════════════════════════════════════════════════
+PLANS = [
+    {
+        'code': 'ESSENTIEL',
+        'name': 'Essentiel',
+        'price_monthly': 5000,
+        'price_yearly': 50000,
+        'features': [
+            'Ventes illimitées',
+            'Gestion du stock',
+            'Cahier de crédit',
+            'Notifications',
+            'Synchronisation Cloud',
+            '1 utilisateur',
+        ],
+    },
+    {
+        'code': 'PRO',
+        'name': 'Pro',
+        'price_monthly': 7500,
+        'price_yearly': 75000,
+        'features': [
+            'Tout Essentiel +',
+            'Gestion de la caisse',
+            'Gestion des dépenses',
+            'Rapports avancés',
+            'Export Excel/PDF',
+            'Support prioritaire',
+        ],
+    },
+    {
+        'code': 'BUSINESS',
+        'name': 'Business',
+        'price_monthly': 10000,
+        'price_yearly': 100000,
+        'features': [
+            'Tout Pro +',
+            'Gestion des fournisseurs',
+            'Multi-utilisateurs (5)',
+            'Multi-boutiques',
+            'Statistiques avancées',
+            'Support dédié',
+        ],
+    },
+]

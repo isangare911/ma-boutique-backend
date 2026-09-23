@@ -68,3 +68,64 @@ class ShopSettingsView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user.shop
+    
+from rest_framework import status
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated
+from .subscription_service import SubscriptionService
+from .serializers import SubscriptionSerializer, PLANS
+
+
+class SubscriptionStatusView(APIView):
+    """GET /api/v1/subscription/status/ — État de l'abonnement"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        shop = request.user.shop
+        if not shop:
+            return Response(
+                {'error': 'Aucune boutique associée'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        
+        # Forcer une vérification du statut
+        SubscriptionService.check_status(shop)
+        shop.refresh_from_db()
+        
+        return Response(SubscriptionSerializer(shop).data)
+
+
+class SubscriptionPlansView(APIView):
+    """GET /api/v1/subscription/plans/ — Liste des plans"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        return Response(PLANS)
+
+
+class SubscriptionActivateView(APIView):
+    """POST /api/v1/subscription/activate/ — Activer un plan (test)"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        plan_code = request.data.get('plan')
+        duration_days = int(request.data.get('duration_days', 30))
+
+        if plan_code not in ['ESSENTIEL', 'PRO', 'BUSINESS']:
+            return Response(
+                {'error': 'Plan invalide'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        shop = request.user.shop
+        if not shop:
+            return Response(
+                {'error': 'Aucune boutique associée'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ⚠️ Dans un vrai système, il faudrait vérifier le paiement ici
+        SubscriptionService.activate_plan(shop, plan_code, duration_days)
+        
+        return Response(SubscriptionSerializer(shop).data)
