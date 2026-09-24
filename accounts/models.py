@@ -147,34 +147,48 @@ class User(AbstractUser):
     def get_full_name(self):
         return f'{self.first_name} {self.last_name}'.strip()
     
+    
 class Payment(models.Model):
-    """Paiement d'abonnement via Mobile Money (USSD manuel)."""
+    """Paiement d'abonnement avec code unique sécurisé."""
     
     METHOD_CHOICES = [
         ('ORANGE_MONEY', 'Orange Money'),
         ('WAVE', 'Wave'),
         ('MOOV_MONEY', 'Moov Money'),
-        ('CASH', 'Espèces'),
-        ('OTHER', 'Autre'),
     ]
     
     STATUS_CHOICES = [
-        ('PENDING', 'En attente'),
-        ('SUCCESS', 'Confirmé'),
+        ('PENDING', 'En attente de paiement'),
+        ('PENDING_REVIEW', 'En attente de validation'),
+        ('APPROVED', 'Approuvé'),
+        ('REJECTED', 'Rejeté'),
         ('CANCELLED', 'Annulé'),
-        ('FAILED', 'Échoué'),
     ]
     
     id = models.CharField(max_length=50, primary_key=True, editable=False)
+    
+    # ⚡ CODE UNIQUE de paiement (anti-fraude)
+    payment_code = models.CharField(
+        max_length=20,
+        unique=True,
+        editable=False,
+        db_index=True,
+        verbose_name='Code de paiement',
+    )
+    
     shop = models.ForeignKey(
         Shop,
         on_delete=models.CASCADE,
         related_name='payments',
     )
-    plan = models.CharField(max_length=20)  # ESSENTIEL, PRO, BUSINESS
+    plan = models.CharField(max_length=20)
     amount = models.DecimalField(max_digits=10, decimal_places=2)
     method = models.CharField(max_length=20, choices=METHOD_CHOICES)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='PENDING',
+    )
     
     # ⚡ Code de transaction fourni par l'utilisateur
     transaction_id = models.CharField(max_length=200, blank=True, null=True)
@@ -185,14 +199,23 @@ class Payment(models.Model):
     # ⚡ Durée activée
     duration_days = models.IntegerField(default=30)
     
-    # ⚡ Notes et erreurs
+    # ⚡ Validation par le propriétaire
+    approved_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_payments',
+    )
+    approved_at = models.DateTimeField(blank=True, null=True)
+    rejection_reason = models.TextField(blank=True, null=True)
+    
+    # ⚡ Notes internes
     notes = models.TextField(blank=True, null=True)
-    error_message = models.TextField(blank=True, null=True)
     
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    paid_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         db_table = 'payments'
@@ -200,16 +223,33 @@ class Payment(models.Model):
         indexes = [
             models.Index(fields=['shop', '-created_at']),
             models.Index(fields=['status']),
-            models.Index(fields=['transaction_id']),
+            models.Index(fields=['payment_code']),
         ]
 
     def __str__(self):
-        return f'{self.id} — {self.plan} — {self.status}'
+        return f'{self.payment_code} — {self.plan} — {self.status}'
 
     def save(self, *args, **kwargs):
         if not self.id:
             self.id = f'PAY-{uuid.uuid4().hex[:10].upper()}'
+        if not self.payment_code:
+            self.payment_code = self._generate_code()
         super().save(*args, **kwargs)
+
+    @staticmethod
+    def _generate_code():
+        """Génère un code unique au format MB-XXXX-XXXX-XXXX."""
+        import random
+        import string
+        
+        while True:
+            parts = [
+                ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+                for _ in range(3)
+            ]
+            code = f'MB-{parts[0]}-{parts[1]}-{parts[2]}'
+            if not Payment.objects.filter(payment_code=code).exists():
+                return code
 
     @staticmethod
     def get_plan_price(plan):

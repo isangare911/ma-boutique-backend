@@ -265,3 +265,109 @@ class PaymentListView(APIView):
             return Response([])
         payments = MobileMoneyService.get_shop_payments(request.user.shop)
         return Response(PaymentSerializer(payments, many=True).data)
+    
+# ═══════════════════════════════════════════════════════════
+# VUES ADMIN (Dashboard propriétaire)
+# ═══════════════════════════════════════════════════════════
+
+class AdminStatsView(APIView):
+    """GET /api/v1/admin/stats/ — Statistiques globales"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        stats = MobileMoneyService.get_admin_stats()
+        return Response(stats)
+
+
+class AdminShopsView(APIView):
+    """GET /api/v1/admin/shops/ — Liste des boutiques"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        shops = MobileMoneyService.get_all_shops_with_stats()
+        return Response(shops)
+
+
+class AdminPaymentsView(APIView):
+    """GET /api/v1/admin/payments/ — Liste des paiements"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        status_filter = request.query_params.get('status')
+        payments = MobileMoneyService.get_all_payments(status_filter)
+        return Response(PaymentSerializer(payments, many=True).data)
+
+
+class AdminApprovePaymentView(APIView):
+    """POST /api/v1/admin/payments/<payment_id>/approve/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payment_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            payment = MobileMoneyService.approve_payment(payment_id, request.user)
+            return Response({
+                'payment': PaymentSerializer(payment).data,
+                'message': f'✓ Paiement {payment.payment_code} approuvé',
+            })
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class AdminRejectPaymentView(APIView):
+    """POST /api/v1/admin/payments/<payment_id>/reject/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payment_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        reason = request.data.get('reason', '').strip()
+        if not reason:
+            return Response(
+                {'error': 'Raison du rejet requise'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = MobileMoneyService.reject_payment(
+                payment_id, reason, request.user
+            )
+            return Response({
+                'payment': PaymentSerializer(payment).data,
+                'message': f'Paiement {payment.payment_code} rejeté',
+            })
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
