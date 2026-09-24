@@ -21,9 +21,9 @@ class MobileMoneyService:
     # ⚡ NUMÉROS MARCHANDS — À REMPLACER PAR TES VRAIS NUMÉROS
     # ═══════════════════════════════════════════════════════════
     MERCHANT_NUMBERS = {
-        'ORANGE_MONEY': '+223 70 00 00 01',   # ← Ton numéro Orange Money
-        'WAVE': '+223 76 00 00 02',           # ← Ton numéro Wave
-        'MOOV_MONEY': '+223 66 00 00 03',     # ← Ton numéro Moov Money
+        'ORANGE_MONEY': '+223 84 09 99 44',   # ← Ton numéro Orange Money
+        'WAVE': '+223 84 09 99 44',           # ← Ton numéro Wave
+        'MOOV_MONEY': '+223 63 54 32 54',     # ← Ton numéro Moov Money
     }
 
     # ═══════════════════════════════════════════════════════════
