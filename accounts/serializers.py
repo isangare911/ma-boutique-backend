@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User, Shop
-
+from .models import Payment
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -162,3 +162,33 @@ PLANS = [
         ],
     },
 ]
+
+class PaymentSerializer(serializers.ModelSerializer):
+    plan_name = serializers.SerializerMethodField()
+    method_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Payment
+        fields = [
+            'id', 'plan', 'plan_name', 'amount',
+            'method', 'method_name', 'status',
+            'transaction_id', 'payer_phone',
+            'duration_days', 'created_at', 'paid_at',
+        ]
+
+    def get_plan_name(self, obj):
+        names = {
+            'ESSENTIEL': 'Essentiel',
+            'PRO': 'Pro',
+            'BUSINESS': 'Business',
+        }
+        return names.get(obj.plan, obj.plan)
+
+    def get_method_name(self, obj):
+        names = {
+            'ORANGE_MONEY': 'Orange Money',
+            'WAVE': 'Wave',
+            'MOOV_MONEY': 'Moov Money',
+            'CASH': 'Espèces',
+        }
+        return names.get(obj.method, obj.method)

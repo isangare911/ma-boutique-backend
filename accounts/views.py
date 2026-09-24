@@ -7,7 +7,9 @@ from .models import User, Shop
 from .serializers import (
     UserSerializer, ShopSerializer, RegisterSerializer, LoginSerializer
 )
-
+from .mobile_money_service import MobileMoneyService
+from .serializers import PaymentSerializer
+from .models import Payment
 
 def get_tokens_for_user(user):
     """Génère access + refresh tokens pour un utilisateur"""
@@ -129,3 +131,137 @@ class SubscriptionActivateView(APIView):
         SubscriptionService.activate_plan(shop, plan_code, duration_days)
         
         return Response(SubscriptionSerializer(shop).data)
+    
+# ═══════════════════════════════════════════════════════════
+# MOBILE MONEY (USSD manuel)
+# ═══════════════════════════════════════════════════════════
+
+class CreatePaymentView(APIView):
+    """
+    POST /api/v1/payments/create/
+    Body: {"plan": "PRO", "method": "ORANGE_MONEY", "payer_phone": "+223..."}
+    
+    Crée une demande de paiement et retourne les instructions USSD.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        plan = request.data.get('plan')
+        method = request.data.get('method')
+        payer_phone = request.data.get('payer_phone')
+
+        if not plan or not method:
+            return Response(
+                {'error': 'Plan et méthode requis'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if plan not in ['ESSENTIEL', 'PRO', 'BUSINESS']:
+            return Response(
+                {'error': 'Plan invalide'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if method not in ['ORANGE_MONEY', 'WAVE', 'MOOV_MONEY']:
+            return Response(
+                {'error': 'Méthode de paiement invalide'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not request.user.shop:
+            return Response(
+                {'error': 'Aucune boutique associée'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = MobileMoneyService.create_payment(
+                shop=request.user.shop,
+                plan=plan,
+                method=method,
+                payer_phone=payer_phone,
+            )
+            instructions = MobileMoneyService.get_payment_instructions(payment)
+
+            return Response({
+                'payment': PaymentSerializer(payment).data,
+                'instructions': instructions,
+            }, status=status.HTTP_201_CREATED)
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class ConfirmPaymentView(APIView):
+    """
+    POST /api/v1/payments/<payment_id>/confirm/
+    Body: {"transaction_id": "MP240924.1234.A5B8C2"}
+    
+    Confirme un paiement et active l'abonnement.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payment_id):
+        transaction_id = request.data.get('transaction_id', '').strip()
+
+        if not transaction_id:
+            return Response(
+                {'error': 'Code de transaction requis'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(transaction_id) < 4:
+            return Response(
+                {'error': 'Code de transaction trop court (minimum 4 caractères)'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            payment = MobileMoneyService.confirm_payment(
+                payment_id=payment_id,
+                transaction_id=transaction_id,
+                user=request.user,
+            )
+
+            # Recharger la boutique mise à jour
+            shop = request.user.shop
+            shop.refresh_from_db()
+
+            return Response({
+                'payment': PaymentSerializer(payment).data,
+                'subscription': SubscriptionSerializer(shop).data,
+                'message': '✓ Paiement confirmé, abonnement activé !',
+            })
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class CancelPaymentView(APIView):
+    """POST /api/v1/payments/<payment_id>/cancel/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, payment_id):
+        try:
+            payment = MobileMoneyService.cancel_payment(payment_id, request.user)
+            return Response(PaymentSerializer(payment).data)
+        except ValueError as e:
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class PaymentListView(APIView):
+    """GET /api/v1/payments/ — Historique des paiements"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.shop:
+            return Response([])
+        payments = MobileMoneyService.get_shop_payments(request.user.shop)
+        return Response(PaymentSerializer(payments, many=True).data)

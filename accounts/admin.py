@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import User, Shop
+from .models import Payment
 
 
 @admin.register(Shop)
@@ -35,3 +36,14 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('phone', 'first_name', 'last_name', 'role', 'shop', 'password1', 'password2'),
         }),
     )
+    
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = (
+        'id', 'shop', 'plan', 'amount',
+        'method', 'status', 'transaction_id', 'created_at',
+    )
+    list_filter = ('status', 'method', 'plan')
+    search_fields = ('id', 'transaction_id', 'payer_phone')
+    readonly_fields = ('created_at', 'updated_at', 'paid_at')
+    date_hierarchy = 'created_at'
