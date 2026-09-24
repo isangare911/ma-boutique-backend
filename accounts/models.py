@@ -173,6 +173,8 @@ class Payment(models.Model):
         unique=True,
         editable=False,
         db_index=True,
+        null=True,
+        blank=True,
         verbose_name='Code de paiement',
     )
     
