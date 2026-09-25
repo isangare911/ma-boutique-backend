@@ -3,18 +3,26 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.tokens import RefreshToken
-from .models import User, Shop
+from django.db.models import Sum, Count, Q
+from django.utils import timezone
+from datetime import timedelta
+
+from .models import User, Shop, Payment
 from .serializers import (
-    UserSerializer, ShopSerializer, RegisterSerializer, LoginSerializer
+    UserSerializer, ShopSerializer, RegisterSerializer, LoginSerializer,
+    PaymentSerializer, SubscriptionSerializer, PLANS,
 )
+from .subscription_service import SubscriptionService
 from .mobile_money_service import MobileMoneyService
-from .serializers import PaymentSerializer
-from .models import Payment
+
+
+# ═══════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════
 
 def get_tokens_for_user(user):
     """Génère access + refresh tokens pour un utilisateur"""
     refresh = RefreshToken.for_user(user)
-    # Ajouter des claims personnalisés
     refresh['role'] = user.role
     refresh['shop_id'] = user.shop_id if user.shop else None
     return {
@@ -23,8 +31,12 @@ def get_tokens_for_user(user):
     }
 
 
+# ═══════════════════════════════════════════════════════════
+# AUTHENTIFICATION
+# ═══════════════════════════════════════════════════════════
+
 class RegisterView(APIView):
-    """POST /api/v1/auth/register/ — Créer une boutique + compte propriétaire"""
+    """POST /api/v1/auth/register/ — Créer une boutique + propriétaire"""
     permission_classes = [AllowAny]
 
     def post(self, request):
@@ -44,7 +56,10 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = LoginSerializer(data=request.data, context={'request': request})
+        serializer = LoginSerializer(
+            data=request.data,
+            context={'request': request},
+        )
         serializer.is_valid(raise_exception=True)
         user = serializer.validated_data['user']
         
@@ -70,14 +85,11 @@ class ShopSettingsView(generics.RetrieveUpdateAPIView):
 
     def get_object(self):
         return self.request.user.shop
-    
-from rest_framework import status
-from rest_framework.views import APIView
-from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
-from .subscription_service import SubscriptionService
-from .serializers import SubscriptionSerializer, PLANS
 
+
+# ═══════════════════════════════════════════════════════════
+# ABONNEMENT
+# ═══════════════════════════════════════════════════════════
 
 class SubscriptionStatusView(APIView):
     """GET /api/v1/subscription/status/ — État de l'abonnement"""
@@ -91,7 +103,6 @@ class SubscriptionStatusView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
         
-        # Forcer une vérification du statut
         SubscriptionService.check_status(shop)
         shop.refresh_from_db()
         
@@ -107,7 +118,7 @@ class SubscriptionPlansView(APIView):
 
 
 class SubscriptionActivateView(APIView):
-    """POST /api/v1/subscription/activate/ — Activer un plan (test)"""
+    """POST /api/v1/subscription/activate/ — Activer un plan (test admin)"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
@@ -127,21 +138,21 @@ class SubscriptionActivateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # ⚠️ Dans un vrai système, il faudrait vérifier le paiement ici
         SubscriptionService.activate_plan(shop, plan_code, duration_days)
         
         return Response(SubscriptionSerializer(shop).data)
-    
+
+
 # ═══════════════════════════════════════════════════════════
-# MOBILE MONEY (USSD manuel)
+# MOBILE MONEY (USSD manuel sécurisé)
 # ═══════════════════════════════════════════════════════════
 
 class CreatePaymentView(APIView):
     """
     POST /api/v1/payments/create/
-    Body: {"plan": "PRO", "method": "ORANGE_MONEY", "payer_phone": "+223..."}
+    Body: {"plan": "PRO", "method": "ORANGE_MONEY"}
     
-    Crée une demande de paiement et retourne les instructions USSD.
+    Crée un paiement avec code unique et retourne les instructions USSD.
     """
     permission_classes = [IsAuthenticated]
 
@@ -194,12 +205,15 @@ class CreatePaymentView(APIView):
             )
 
 
-class ConfirmPaymentView(APIView):
+class SubmitPaymentProofView(APIView):
     """
-    POST /api/v1/payments/<payment_id>/confirm/
+    POST /api/v1/payments/<payment_id>/submit/
     Body: {"transaction_id": "MP240924.1234.A5B8C2"}
     
-    Confirme un paiement et active l'abonnement.
+    ⚡ NOUVEAU FLUX SÉCURISÉ :
+    Le client soumet la preuve de paiement. Le paiement passe en 
+    PENDING_REVIEW (en attente de validation admin).
+    L'abonnement n'est PAS activé immédiatement.
     """
     permission_classes = [IsAuthenticated]
 
@@ -219,20 +233,15 @@ class ConfirmPaymentView(APIView):
             )
 
         try:
-            payment = MobileMoneyService.confirm_payment(
+            payment = MobileMoneyService.submit_payment_proof(
                 payment_id=payment_id,
                 transaction_id=transaction_id,
                 user=request.user,
             )
 
-            # Recharger la boutique mise à jour
-            shop = request.user.shop
-            shop.refresh_from_db()
-
             return Response({
                 'payment': PaymentSerializer(payment).data,
-                'subscription': SubscriptionSerializer(shop).data,
-                'message': '✓ Paiement confirmé, abonnement activé !',
+                'message': 'Preuve soumise. En attente de validation.',
             })
         except ValueError as e:
             return Response(
@@ -257,7 +266,7 @@ class CancelPaymentView(APIView):
 
 
 class PaymentListView(APIView):
-    """GET /api/v1/payments/ — Historique des paiements"""
+    """GET /api/v1/payments/ — Historique des paiements du client"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -265,7 +274,8 @@ class PaymentListView(APIView):
             return Response([])
         payments = MobileMoneyService.get_shop_payments(request.user.shop)
         return Response(PaymentSerializer(payments, many=True).data)
-    
+
+
 # ═══════════════════════════════════════════════════════════
 # VUES ADMIN (Dashboard propriétaire)
 # ═══════════════════════════════════════════════════════════
@@ -317,7 +327,7 @@ class AdminPaymentsView(APIView):
 
 
 class AdminApprovePaymentView(APIView):
-    """POST /api/v1/admin/payments/<payment_id>/approve/"""
+    """POST /api/v1/admin/payments/<payment_id>/approve/ — Approuver"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, payment_id):
@@ -341,7 +351,7 @@ class AdminApprovePaymentView(APIView):
 
 
 class AdminRejectPaymentView(APIView):
-    """POST /api/v1/admin/payments/<payment_id>/reject/"""
+    """POST /api/v1/admin/payments/<payment_id>/reject/ — Rejeter"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request, payment_id):
