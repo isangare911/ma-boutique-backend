@@ -16,22 +16,29 @@ class MobileMoneyService:
     }
 
     # ═══════════════════════════════════════════════════════════
-    # CRÉER UN PAIEMENT (avec code unique)
+    # CRÉER UN PAIEMENT (avec code unique généré proprement)
     # ═══════════════════════════════════════════════════════════
     @staticmethod
     def create_payment(shop, plan, method, payer_phone=None):
-        """Crée une demande de paiement avec un code unique."""
+        """
+        Crée une demande de paiement avec un code unique.
+        
+        ⚡ IMPORTANT : on utilise Payment() + save() au lieu de 
+        objects.create() pour que la méthode save() du modèle 
+        génère bien le payment_code.
+        """
         amount = Payment.get_plan_price(plan)
         if amount == 0:
             raise ValueError(f'Plan invalide: {plan}')
 
-        # ⚡ Annuler les anciens paiements en attente
+        # ⚡ Annuler les anciens paiements en attente pour cette boutique
         Payment.objects.filter(
             shop=shop,
             status__in=['PENDING', 'PENDING_REVIEW'],
         ).update(status='CANCELLED')
 
-        payment = Payment.objects.create(
+        # ⚡ Créer le paiement (le payment_code sera généré par save())
+        payment = Payment(
             shop=shop,
             plan=plan,
             amount=amount,
@@ -40,6 +47,8 @@ class MobileMoneyService:
             payer_phone=payer_phone,
             duration_days=30,
         )
+        payment.save()
+
         return payment
 
     # ═══════════════════════════════════════════════════════════
@@ -52,7 +61,7 @@ class MobileMoneyService:
             payment.method, ''
         )
         amount = int(payment.amount)
-        code = payment.payment_code
+        code = payment.payment_code or '—'
 
         method_names = {
             'ORANGE_MONEY': 'Orange Money',
@@ -209,7 +218,9 @@ class MobileMoneyService:
     def get_admin_stats():
         """Statistiques globales pour le dashboard admin."""
         now = timezone.now()
-        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        start_of_month = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
         start_of_week = now - timedelta(days=7)
 
         # ─── Revenus ───
@@ -255,6 +266,9 @@ class MobileMoneyService:
             .annotate(total=Sum('amount'), count=Count('id'))
             .order_by('-total')
         )
+        # Convertir Decimal en float pour JSON
+        for item in revenue_by_plan:
+            item['total'] = float(item['total'] or 0)
 
         # ─── Revenus par méthode ───
         revenue_by_method = list(
@@ -263,11 +277,15 @@ class MobileMoneyService:
             .annotate(total=Sum('amount'), count=Count('id'))
             .order_by('-total')
         )
+        for item in revenue_by_method:
+            item['total'] = float(item['total'] or 0)
 
         # ─── Taux de réabonnement ───
-        # Boutiques avec au moins 2 paiements approuvés
         renewal_count = Shop.objects.annotate(
-            payment_count=Count('payments', filter=Q(payments__status='APPROVED'))
+            payment_count=Count(
+                'payments',
+                filter=Q(payments__status='APPROVED'),
+            )
         ).filter(payment_count__gte=2).count()
 
         renewal_rate = (
@@ -309,7 +327,7 @@ class MobileMoneyService:
         for shop in shops:
             # Nombre de paiements approuvés
             approved_payments = shop.payments.filter(status='APPROVED').count()
-            
+
             # Total payé
             total_paid = shop.payments.filter(
                 status='APPROVED'
@@ -345,7 +363,9 @@ class MobileMoneyService:
                 'created_at': shop.created_at,
                 'total_paid': float(total_paid),
                 'payment_count': approved_payments,
-                'last_payment_date': last_payment.approved_at if last_payment else None,
+                'last_payment_date': (
+                    last_payment.approved_at if last_payment else None
+                ),
             })
 
         return result
@@ -357,8 +377,16 @@ class MobileMoneyService:
     def get_all_payments(status_filter=None, limit=100):
         """Retourne tous les paiements avec filtres."""
         payments = Payment.objects.select_related('shop').all()
-        
+
         if status_filter:
             payments = payments.filter(status=status_filter)
-        
+
         return payments.order_by('-created_at')[:limit]
+
+    # ═══════════════════════════════════════════════════════════
+    # HISTORIQUE D'UNE BOUTIQUE
+    # ═══════════════════════════════════════════════════════════
+    @staticmethod
+    def get_shop_payments(shop, limit=20):
+        """Retourne l'historique des paiements d'une boutique."""
+        return Payment.objects.filter(shop=shop).order_by('-created_at')[:limit]
