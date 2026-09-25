@@ -170,11 +170,23 @@ class PaymentSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payment
         fields = [
-            'id', 'plan', 'plan_name', 'amount',
-            'method', 'method_name', 'status',
-            'transaction_id', 'payer_phone',
-            'duration_days', 'created_at', 'paid_at',
+            'id',
+            'payment_code',
+            'plan',
+            'plan_name',
+            'amount',
+            'method',
+            'method_name',
+            'status',
+            'transaction_id',
+            'payer_phone',
+            'duration_days',
+            'created_at',
+            'approved_at',       # ⚡ Remplacé (était paid_at)
+            'rejection_reason',
+            'approved_by',
         ]
+        read_only_fields = ['created_at', 'approved_at']
 
     def get_plan_name(self, obj):
         names = {
