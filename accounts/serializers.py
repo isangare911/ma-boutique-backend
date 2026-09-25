@@ -2,6 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User, Shop
 from .models import Payment
+from .models import ShopUser
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -204,3 +205,32 @@ class PaymentSerializer(serializers.ModelSerializer):
             'CASH': 'Espèces',
         }
         return names.get(obj.method, obj.method)
+
+
+class ShopUserSerializer(serializers.ModelSerializer):
+    user_id = serializers.IntegerField(source='user.id', read_only=True)
+    phone = serializers.CharField(source='user.phone', read_only=True)
+    first_name = serializers.CharField(source='user.first_name', read_only=True)
+    last_name = serializers.CharField(source='user.last_name', read_only=True)
+    is_superuser = serializers.BooleanField(source='user.is_superuser', read_only=True)
+
+    class Meta:
+        model = ShopUser
+        fields = [
+            'id', 'user_id', 'phone', 'first_name', 'last_name',
+            'role', 'is_active', 'is_superuser',
+            'permissions', 'created_at',
+        ]
+        read_only_fields = ['id', 'created_at']
+
+
+class AddShopUserSerializer(serializers.Serializer):
+    """Sérialiseur pour ajouter un utilisateur."""
+    phone = serializers.CharField(max_length=30)
+    first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
+    role = serializers.ChoiceField(
+        choices=['MANAGER', 'SELLER', 'ACCOUNTANT'],
+        default='SELLER',
+    )
+    password = serializers.CharField(min_length=6, write_only=True, required=False)

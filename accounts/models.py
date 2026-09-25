@@ -261,4 +261,48 @@ class Payment(models.Model):
             'PRO': 7500,
             'BUSINESS': 10000,
         }
-        return prices.get(plan, 0)
+        return prices.get(plan, 0) 
+
+class ShopUser(models.Model):
+    """Lien entre un User et une Shop avec un rôle spécifique."""
+    
+    ROLE_CHOICES = [
+        ('OWNER', 'Propriétaire'),
+        ('MANAGER', 'Gérant'),
+        ('SELLER', 'Vendeur'),
+        ('ACCOUNTANT', 'Comptable'),
+    ]
+    
+    id = models.CharField(max_length=50, primary_key=True, editable=False)
+    shop = models.ForeignKey(
+        Shop,
+        on_delete=models.CASCADE,
+        related_name='members',
+    )
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='shop_memberships',
+    )
+    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='SELLER')
+    is_active = models.BooleanField(default=True)
+    
+    # Permissions spécifiques (JSON personnalisable)
+    permissions = models.JSONField(default=dict, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'shop_users'
+        unique_together = [['shop', 'user']]
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.user.phone} @ {self.shop.name} ({self.role})'
+
+    def save(self, *args, **kwargs):
+        if not self.id:
+            self.id = f'MEM-{uuid.uuid4().hex[:8].upper()}'
+        super().save(*args, **kwargs)
+    

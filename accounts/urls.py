@@ -14,6 +14,7 @@ from .views import (
     # Admin (propriétaire)
     AdminStatsView, AdminShopsView, AdminPaymentsView,
     AdminApprovePaymentView, AdminRejectPaymentView,
+    ShopUserListView, ShopUserDetailView,
 )
 
 app_name = 'accounts'
@@ -33,6 +34,10 @@ urlpatterns = [
     path('subscription/status/', SubscriptionStatusView.as_view(), name='sub-status'),
     path('subscription/plans/', SubscriptionPlansView.as_view(), name='sub-plans'),
     path('subscription/activate/', SubscriptionActivateView.as_view(), name='sub-activate'),
+    
+    # Multi-utilisateurs
+    path('shop/users/', ShopUserListView.as_view(), name='shop-users'),
+    path('shop/users/<str:member_id>/', ShopUserDetailView.as_view(), name='shop-user-detail'),
 
     # ═══════════════════════════════════════════════════════
     # PAIEMENTS (client)

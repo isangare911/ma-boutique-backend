@@ -3,7 +3,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import User, Shop
 from .models import Payment
 from django.utils.html import format_html
-
+from .models import ShopUser
 
 @admin.register(Shop)
 class ShopAdmin(admin.ModelAdmin):
@@ -37,6 +37,13 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('phone', 'first_name', 'last_name', 'role', 'shop', 'password1', 'password2'),
         }),
     )
+
+@admin.register(ShopUser)
+class ShopUserAdmin(admin.ModelAdmin):
+    list_display = ('user', 'shop', 'role', 'is_active', 'created_at')
+    list_filter = ('role', 'is_active')
+    search_fields = ('user__phone', 'shop__name')
+    readonly_fields = ('created_at', 'updated_at')
 
 
 @admin.register(Payment)

@@ -14,6 +14,10 @@ from .serializers import (
 )
 from .subscription_service import SubscriptionService
 from .mobile_money_service import MobileMoneyService
+from .models import ShopUser
+from .serializers import ShopUserSerializer, AddShopUserSerializer
+from django.db import transaction
+
 
 
 # ═══════════════════════════════════════════════════════════
@@ -381,3 +385,191 @@ class AdminRejectPaymentView(APIView):
                 {'error': str(e)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+            
+
+
+# ═══════════════════════════════════════════════════════════
+# MULTI-UTILISATEURS PAR BOUTIQUE
+# ═══════════════════════════════════════════════════════════
+
+class ShopUserListView(APIView):
+    """
+    GET /api/v1/shop/users/ — Liste des utilisateurs de la boutique
+    POST /api/v1/shop/users/ — Ajouter un utilisateur
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        if not request.user.shop:
+            return Response([])
+
+        # Récupérer tous les membres
+        members = ShopUser.objects.filter(
+            shop=request.user.shop,
+        ).select_related('user')
+
+        # S'assurer que le propriétaire actuel est inclus
+        # (au cas où il n'aurait pas été ajouté comme membre)
+        if not members.filter(user=request.user).exists():
+            # Créer une entrée pour le propriétaire actuel
+            ShopUser.objects.get_or_create(
+                shop=request.user.shop,
+                user=request.user,
+                defaults={'role': 'OWNER'},
+            )
+            members = ShopUser.objects.filter(
+                shop=request.user.shop,
+            ).select_related('user')
+
+        serializer = ShopUserSerializer(members, many=True)
+        return Response(serializer.data)
+
+    @transaction.atomic
+    def post(self, request):
+        """Ajoute un utilisateur à la boutique."""
+        # Vérifier les permissions (OWNER ou MANAGER seulement)
+        if not request.user.shop:
+            return Response(
+                {'error': 'Aucune boutique associée'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Vérifier que l'utilisateur actuel est OWNER ou MANAGER
+        current_member = ShopUser.objects.filter(
+            shop=request.user.shop,
+            user=request.user,
+        ).first()
+
+        if current_member and current_member.role not in ['OWNER', 'MANAGER']:
+            return Response(
+                {'error': 'Seul le propriétaire ou le gérant peut ajouter des utilisateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Valider les données
+        serializer = AddShopUserSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        phone = serializer.validated_data['phone']
+        role = serializer.validated_data['role']
+        first_name = serializer.validated_data.get('first_name', '')
+        last_name = serializer.validated_data.get('last_name', '')
+        password = serializer.validated_data.get('password')
+
+        # Chercher ou créer l'utilisateur
+        user = User.objects.filter(phone=phone).first()
+
+        if not user:
+            # Créer un nouveau user
+            if not password:
+                password = 'temp123456'  # Mot de passe temporaire
+
+            user = User.objects.create_user(
+                phone=phone,
+                password=password,
+                first_name=first_name,
+                last_name=last_name,
+                role=role,
+                shop=request.user.shop,
+            )
+
+        # Vérifier qu'il n'est pas déjà membre
+        if ShopUser.objects.filter(shop=request.user.shop, user=user).exists():
+            return Response(
+                {'error': 'Cet utilisateur est déjà membre de la boutique'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Créer le lien ShopUser
+        member = ShopUser.objects.create(
+            shop=request.user.shop,
+            user=user,
+            role=role,
+        )
+
+        return Response(
+            ShopUserSerializer(member).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ShopUserDetailView(APIView):
+    """
+    GET /api/v1/shop/users/<id>/ — Détail d'un utilisateur
+    PATCH /api/v1/shop/users/<id>/ — Modifier (rôle)
+    DELETE /api/v1/shop/users/<id>/ — Supprimer
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get_object(self, request, member_id):
+        try:
+            return ShopUser.objects.get(
+                id=member_id,
+                shop=request.user.shop,
+            )
+        except ShopUser.DoesNotExist:
+            return None
+
+    def get(self, request, member_id):
+        member = self.get_object(request, member_id)
+        if not member:
+            return Response(
+                {'error': 'Membre introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(ShopUserSerializer(member).data)
+
+    def patch(self, request, member_id):
+        member = self.get_object(request, member_id)
+        if not member:
+            return Response(
+                {'error': 'Membre introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if member.role == 'OWNER':
+            return Response(
+                {'error': 'Impossible de modifier le propriétaire'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Modifier le rôle
+        new_role = request.data.get('role')
+        if new_role:
+            if new_role not in ['MANAGER', 'SELLER', 'ACCOUNTANT']:
+                return Response(
+                    {'error': 'Rôle invalide'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            member.role = new_role
+
+        # Activer/désactiver
+        is_active = request.data.get('is_active')
+        if is_active is not None:
+            member.is_active = is_active
+
+        member.save()
+        return Response(ShopUserSerializer(member).data)
+
+    def delete(self, request, member_id):
+        member = self.get_object(request, member_id)
+        if not member:
+            return Response(
+                {'error': 'Membre introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if member.role == 'OWNER':
+            return Response(
+                {'error': 'Impossible de supprimer le propriétaire'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if member.user == request.user:
+            return Response(
+                {'error': 'Vous ne pouvez pas vous supprimer vous-même'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        member.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
