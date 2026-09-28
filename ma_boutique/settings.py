@@ -192,12 +192,27 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = False  # Railway gère le SSL
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
-CACHES = {
-    'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'ma-boutique-cache',
+
+# ═══════════════════════════════════════════════════════════
+# CACHE (Redis en prod, LocMemCache en dev)
+# ═══════════════════════════════════════════════════════════
+
+REDIS_URL = config('REDIS_URL', default='')
+
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.redis.RedisCache',
+            'LOCATION': REDIS_URL,
+        }
     }
-}
+else:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+            'LOCATION': 'ma-boutique-cache',
+        }
+    }
     
 # ═══════════════════════════════════════════════════════════
 # ORANGE SMS API
