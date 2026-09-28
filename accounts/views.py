@@ -745,3 +745,27 @@ class ShopUserDetailView(APIView):
 
         member.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)
+class AdminShopPaymentsView(APIView):
+    """
+    GET /api/v1/admin/shops/<shop_id>/payments/
+    Retourne les paiements d'une boutique. Réservé aux superusers.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, shop_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            shop = Shop.objects.get(id=shop_id)
+        except Shop.DoesNotExist:
+            return Response(
+                {'error': 'Boutique introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        payments = Payment.objects.filter(shop=shop).order_by('-created_at')
+        return Response(PaymentSerializer(payments, many=True).data)

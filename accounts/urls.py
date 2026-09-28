@@ -14,7 +14,7 @@ from .views import (
     # Admin (propriétaire)
     AdminStatsView, AdminShopsView, AdminPaymentsView,
     AdminApprovePaymentView, AdminRejectPaymentView,
-    ShopUserListView, ShopUserDetailView,
+    ShopUserListView, ShopUserDetailView, AdminShopPaymentsView,
 )
 
 app_name = 'accounts'
@@ -73,5 +73,10 @@ urlpatterns = [
         'admin/payments/<str:payment_id>/reject/',
         AdminRejectPaymentView.as_view(),
         name='admin-reject',
+    ),
+    path(
+    'admin/shops/<str:shop_id>/payments/',
+    AdminShopPaymentsView.as_view(),
+    name='admin-shop-payments',
     ),
 ]
