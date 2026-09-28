@@ -3,20 +3,30 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.utils import timezone
+
 from .serializers import SyncRequestSerializer
 from .models import SyncLog
+from accounts.permissions import CanUseSync, get_user_role
 
 
 class SyncView(APIView):
     """
     POST /api/v1/sync/
-    
-    Reçoit un batch d'opérations en attente et les traite une par une.
+
+    Reçoit un batch d'opérations et les traite.
+    Réservé à OWNER, MANAGER.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # ⚡ Vérifier que l'utilisateur a une boutique
+        # 🔒 Vérifier le rôle
+        role = get_user_role(request.user)
+        if role not in ('OWNER', 'MANAGER'):
+            return Response(
+                {'error': 'Accès refusé'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
         if not request.user.shop:
             return Response(
                 {
@@ -25,15 +35,15 @@ class SyncView(APIView):
                 },
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        
+
         serializer = SyncRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        
+
         operations = serializer.validated_data['operations']
         results = []
         success_count = 0
         failed_count = 0
-        
+
         for op in operations:
             try:
                 self._process_operation(request.user, op)
@@ -42,7 +52,7 @@ class SyncView(APIView):
                     'success': True,
                 })
                 success_count += 1
-                
+
                 SyncLog.objects.create(
                     shop=request.user.shop,
                     operation_type=op['operation_type'],
@@ -57,7 +67,7 @@ class SyncView(APIView):
                     'error': str(e),
                 })
                 failed_count += 1
-                
+
                 SyncLog.objects.create(
                     shop=request.user.shop,
                     operation_type=op['operation_type'],
@@ -66,7 +76,7 @@ class SyncView(APIView):
                     status='FAILED',
                     error_message=str(e),
                 )
-        
+
         return Response({
             'results': results,
             'summary': {
@@ -76,20 +86,21 @@ class SyncView(APIView):
             },
         }, status=status.HTTP_200_OK)
 
+    # ═══════════════════════════════════════════════════════════
+    # ROUTEUR
+    # ═══════════════════════════════════════════════════════════
+
     def _process_operation(self, user, op):
-        """Traite une opération selon son type d'entité"""
         entity_type = op['entity_type']
         operation_type = op['operation_type']
         entity_id = op['entity_id']
         payload = op['payload']
         shop = user.shop
-        
-        # ⚡ SÉCURITÉ : SHOP_SETTINGS ne peut JAMAIS créer de boutique
+
         if entity_type == 'SHOP_SETTINGS':
             self._handle_shop_settings(shop, operation_type, entity_id, payload)
             return
-        
-        # Router vers le bon handler
+
         handlers = {
             'PRODUCT': self._handle_product,
             'SALE': self._handle_sale,
@@ -102,20 +113,17 @@ class SyncView(APIView):
             'CASH_SESSION': self._handle_cash_session,
             'CASH_MOVEMENT': self._handle_cash_movement,
         }
-        
+
         handler = handlers.get(entity_type)
         if not handler:
             raise Exception(f'Type d\'entité inconnu : {entity_type}')
-        
+
         handler(shop, operation_type, entity_id, payload)
-        
-    
-    
 
     # ═══════════════════════════════════════════════════════════
-    # HANDLERS PAR ENTITÉ
+    # HANDLERS (identiques à ton original)
     # ═══════════════════════════════════════════════════════════
-    
+
     def _handle_product(self, shop, op_type, entity_id, payload):
         from inventory.models import Product
         if op_type == 'DELETE':
@@ -149,11 +157,9 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             Sale.objects.filter(id=entity_id, shop=shop).delete()
             return
-        # Gérer UPDATE (annulation)
         if op_type == 'UPDATE' and payload.get('status') == 'CANCELLED':
             Sale.objects.filter(id=entity_id, shop=shop).update(status='CANCELLED')
             return
-        # Créer la vente + les items
         if op_type == 'CREATE':
             sale, _ = Sale.objects.update_or_create(
                 id=entity_id,
@@ -211,18 +217,18 @@ class SyncView(APIView):
         from finance.models import Expense
         from django.utils.dateparse import parse_datetime
         from django.utils import timezone as django_timezone
+
         if op_type == 'DELETE':
             Expense.objects.filter(id=entity_id, shop=shop).delete()
             return
-        
-        
+
         expense_date = payload.get('expense_date')
         if expense_date:
             parsed = parse_datetime(expense_date)
             if parsed and django_timezone.is_naive(parsed):
                 parsed = django_timezone.make_aware(parsed)
                 expense_date = parsed.isoformat()
-        
+
         Expense.objects.update_or_create(
             id=entity_id,
             defaults={
@@ -249,23 +255,22 @@ class SyncView(APIView):
 
     def _handle_supplier_transaction(self, shop, op_type, entity_id, payload):
         from finance.models import SupplierTransaction, Supplier
-        
+
         if op_type == 'DELETE':
             SupplierTransaction.objects.filter(
                 id=entity_id,
                 supplier__shop=shop,
             ).delete()
             return
-        
-        # Vérifier que le fournisseur appartient bien à la boutique
+
         supplier_id = payload.get('supplier_id')
         if not supplier_id:
             raise Exception('supplier_id manquant dans le payload')
-        
+
         supplier = Supplier.objects.filter(id=supplier_id, shop=shop).first()
         if not supplier:
             raise Exception(f'Fournisseur {supplier_id} introuvable')
-        
+
         SupplierTransaction.objects.update_or_create(
             id=entity_id,
             defaults={
@@ -281,30 +286,29 @@ class SyncView(APIView):
         from finance.models import CashSession
         from django.utils.dateparse import parse_datetime
         from django.utils import timezone as django_timezone
-        
+
         if op_type == 'DELETE':
             CashSession.objects.filter(id=entity_id, shop=shop).delete()
             return
-        
-        # ⚡ Convertir les dates en timezone-aware
+
         opened_at = payload.get('opened_at')
         if opened_at:
             parsed = parse_datetime(opened_at)
             if parsed and django_timezone.is_naive(parsed):
                 opened_at = django_timezone.make_aware(parsed).isoformat()
-        
+
         closed_at = payload.get('closed_at')
         if closed_at:
             parsed = parse_datetime(closed_at)
             if parsed and django_timezone.is_naive(parsed):
                 closed_at = django_timezone.make_aware(parsed).isoformat()
-        
+
         defaults = {
             'shop': shop,
             'opening_balance': payload.get('opening_balance', 0),
             'status': payload.get('status', 'OPEN'),
         }
-        
+
         if opened_at:
             defaults['opened_at'] = opened_at
         if payload.get('closing_balance') is not None:
@@ -315,35 +319,32 @@ class SyncView(APIView):
             defaults['difference'] = payload['difference']
         if closed_at:
             defaults['closed_at'] = closed_at
-        
-        CashSession.objects.update_or_create(id=entity_id, defaults=defaults)
 
+        CashSession.objects.update_or_create(id=entity_id, defaults=defaults)
 
     def _handle_cash_movement(self, shop, op_type, entity_id, payload):
         from finance.models import CashMovement, CashSession
         from django.utils.dateparse import parse_datetime
         from django.utils import timezone as django_timezone
-        
+
         if op_type == 'DELETE':
             CashMovement.objects.filter(id=entity_id, session__shop=shop).delete()
             return
-        
-        # ⚡ Vérifier que la session appartient bien à la boutique
+
         session_id = payload.get('session_id')
         if not session_id:
             raise Exception('session_id manquant')
-        
+
         session = CashSession.objects.filter(id=session_id, shop=shop).first()
         if not session:
             raise Exception(f'Session {session_id} introuvable')
-        
-        # ⚡ Convertir created_at
+
         created_at = payload.get('created_at')
         if created_at:
             parsed = parse_datetime(created_at)
             if parsed and django_timezone.is_naive(parsed):
                 created_at = django_timezone.make_aware(parsed)
-        
+
         defaults = {
             'session': session,
             'type': payload.get('type', 'IN'),
@@ -353,23 +354,18 @@ class SyncView(APIView):
         }
         if created_at:
             defaults['created_at'] = created_at
-        
+
         CashMovement.objects.update_or_create(id=entity_id, defaults=defaults)
+
     def _handle_shop_settings(self, shop, op_type, entity_id, payload):
-        """
-        Modifie la boutique EXISTANTE de l'utilisateur connecté.
-        Ne crée JAMAIS une nouvelle boutique.
-        """
-        # ⚡ Vérifier que l'utilisateur a bien une boutique
         if not shop:
             raise Exception('Aucune boutique associée à l\'utilisateur connecté')
-        
-        # ⚡ Modifier SEULEMENT les champs autorisés
+
         allowed_fields = [
             'name', 'currency', 'address', 'phone',
             'email', 'owner_name', 'logo_path',
         ]
-        
+
         changed = False
         for k in allowed_fields:
             if k in payload and payload[k] is not None:
@@ -378,27 +374,24 @@ class SyncView(APIView):
                 if old_value != new_value:
                     setattr(shop, k, new_value)
                     changed = True
-        
+
         if changed:
             shop.save()
-            print(f'✓ Boutique {shop.id} mise à jour : {shop.name}')
-        else:
-            print(f'ℹ Aucun changement pour la boutique {shop.id}')
 
 
 class SyncStatusView(APIView):
-    """GET /api/v1/sync/status/ — État de synchronisation"""
+    """GET /api/v1/sync/status/"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from .models import SyncLog
-        
+
         if not request.user.shop:
             return Response({
                 'last_sync': None,
                 'recent_logs': [],
             })
-        
+
         logs = SyncLog.objects.filter(shop=request.user.shop)[:20]
         return Response({
             'last_sync': logs.first().created_at if logs.exists() else None,

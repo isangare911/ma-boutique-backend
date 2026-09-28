@@ -64,6 +64,14 @@ class RegisterSerializer(serializers.Serializer):
             role='OWNER',
             shop=shop,
         )
+
+        # ⚡ Créer aussi l'entrée ShopUser pour le propriétaire
+        # Ça évite les créations à la volée dans ShopUserListView.get()
+        ShopUser.objects.create(
+            shop=shop,
+            user=user,
+            role='OWNER',
+        )
         
         return user
 
