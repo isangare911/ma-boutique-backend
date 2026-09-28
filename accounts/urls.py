@@ -15,6 +15,7 @@ from .views import (
     AdminStatsView, AdminShopsView, AdminPaymentsView,
     AdminApprovePaymentView, AdminRejectPaymentView,
     ShopUserListView, ShopUserDetailView, AdminShopPaymentsView,
+    RequestOTPView, VerifyOTPView,
 )
 
 app_name = 'accounts'
@@ -57,6 +58,8 @@ urlpatterns = [
         CancelPaymentView.as_view(),
         name='payment-cancel',
     ),
+    path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),
+    path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
 
     # ═══════════════════════════════════════════════════════
     # ADMIN (propriétaire de l'app)

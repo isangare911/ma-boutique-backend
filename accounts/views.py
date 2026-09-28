@@ -769,3 +769,113 @@ class AdminShopPaymentsView(APIView):
 
         payments = Payment.objects.filter(shop=shop).order_by('-created_at')
         return Response(PaymentSerializer(payments, many=True).data)
+    
+# ═══════════════════════════════════════════════════════════
+# OTP PAR SMS (Orange Developer)
+# ═══════════════════════════════════════════════════════════
+
+from .otp_service import request_otp, verify_otp
+
+
+class RequestOTPView(APIView):
+    """
+    POST /api/v1/auth/request-otp/
+    Body: {"phone": "+223XXXXXXXX"}
+
+    Envoie un code OTP par SMS au numéro indiqué.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        phone = request.data.get('phone', '').strip()
+
+        if not phone:
+            return Response(
+                {'error': 'Numéro de téléphone requis'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not phone.startswith('+'):
+            return Response(
+                {'error': 'Le numéro doit commencer par +'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if len(phone) < 10:
+            return Response(
+                {'error': 'Numéro trop court'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Vérifier que l'utilisateur existe (optionnel)
+        if not User.objects.filter(phone=phone).exists():
+            # On peut choisir de ne pas révéler ça au client
+            # pour éviter l'énumération de comptes.
+            # Pour l'instant, on renvoie OK sans envoyer
+            return Response(
+                {'success': True, 'message': 'Si ce numéro existe, un code a été envoyé'},
+                status=status.HTTP_200_OK,
+            )
+
+        result = request_otp(phone)
+
+        if result.get('success'):
+            return Response(
+                {'success': True, 'message': 'Code envoyé par SMS'},
+                status=status.HTTP_200_OK,
+            )
+        else:
+            return Response(
+                {'error': result.get('error', 'Erreur inconnue')},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+
+class VerifyOTPView(APIView):
+    """
+    POST /api/v1/auth/verify-otp/
+    Body: {"phone": "+223XXXXXXXX", "code": "123456"}
+
+    Vérifie le code. Si valide, retourne les tokens JWT.
+    """
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        phone = request.data.get('phone', '').strip()
+        code = request.data.get('code', '').strip()
+
+        if not phone or not code:
+            return Response(
+                {'error': 'Numéro et code requis'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Vérifier le code
+        if not verify_otp(phone, code):
+            return Response(
+                {'error': 'Code invalide ou expiré'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Récupérer l'utilisateur
+        try:
+            user = User.objects.get(phone=phone)
+        except User.DoesNotExist:
+            return Response(
+                {'error': 'Utilisateur introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if not user.is_active:
+            return Response(
+                {'error': 'Ce compte est désactivé'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        # Générer les tokens JWT (même méthode que le login classique)
+        tokens = get_tokens_for_user(user)
+
+        return Response({
+            'user': UserSerializer(user).data,
+            'tokens': tokens,
+        }, status=status.HTTP_200_OK)

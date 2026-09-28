@@ -192,3 +192,28 @@ if not DEBUG:
     SECURE_SSL_REDIRECT = False  # Railway gère le SSL
     SESSION_COOKIE_SECURE = True
     CSRF_COOKIE_SECURE = True
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'ma-boutique-cache',
+    }
+}
+    
+# ═══════════════════════════════════════════════════════════
+# ORANGE SMS API
+# ═══════════════════════════════════════════════════════════
+
+ORANGE_CLIENT_ID = config('ORANGE_CLIENT_ID', default='')
+ORANGE_CLIENT_SECRET = config('ORANGE_CLIENT_SECRET', default='')
+ORANGE_SENDER_NUMBER = config('ORANGE_SENDER_NUMBER', default='')
+ORANGE_SENDER_NAME = config('ORANGE_SENDER_NAME', default='MaBoutique')
+ORANGE_OAUTH_URL = config(
+    'ORANGE_OAUTH_URL',
+    default='https://api.orange.com/oauth/v3/token',
+)
+ORANGE_SMS_URL = config(
+    'ORANGE_SMS_URL',
+    default='https://api.orange.com/smsmessaging/v1/outbound',
+)
+
+OTP_EXPIRY_SECONDS = config('OTP_EXPIRY_SECONDS', default=300, cast=int)
