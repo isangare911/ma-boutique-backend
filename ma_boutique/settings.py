@@ -136,7 +136,17 @@ SIMPLE_JWT = {
 # ═══════════════════════════════════════════════════════════
 # CORS (pour Flutter)
 # ═══════════════════════════════════════════════════════════
-CORS_ALLOW_ALL_ORIGINS = True  # ⚡ Autoriser Flutter
+# ⚡ CORS : autoriser uniquement en dev, restreindre en prod
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
+else:
+    CORS_ALLOW_ALL_ORIGINS = False
+    CORS_ALLOWED_ORIGINS = config(
+        'CORS_ALLOWED_ORIGINS',
+        default='https://ma-boutique-backend-production.up.railway.app',
+        cast=Csv(),
+    )
+
 CORS_ALLOW_CREDENTIALS = True
 
 CSRF_TRUSTED_ORIGINS = config (
