@@ -16,6 +16,9 @@ from .views import (
     AdminApprovePaymentView, AdminRejectPaymentView,
     ShopUserListView, ShopUserDetailView, AdminShopPaymentsView,
     RequestOTPView, VerifyOTPView, ChangePasswordView,
+    GrantTrialView,
+    CancelSubscriptionView,
+    ReactivateShopView,
 )
 
 app_name = 'accounts'
@@ -83,5 +86,21 @@ urlpatterns = [
     'admin/shops/<str:shop_id>/payments/',
     AdminShopPaymentsView.as_view(),
     name='admin-shop-payments',
+    ),
+    
+    path(
+    'admin/shops/<str:shop_id>/grant-trial/',
+    GrantTrialView.as_view(),
+    name='admin-grant-trial',
+    ),
+    path(
+        'admin/shops/<str:shop_id>/cancel-subscription/',
+        CancelSubscriptionView.as_view(),
+        name='admin-cancel-subscription',
+    ),
+    path(
+        'admin/shops/<str:shop_id>/reactivate/',
+        ReactivateShopView.as_view(),
+        name='admin-reactivate-shop',
     ),
 ]

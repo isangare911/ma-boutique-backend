@@ -22,12 +22,21 @@ class ShopSerializer(serializers.ModelSerializer):
         model = Shop
         fields = [
             'id', 'name', 'logo_path', 'currency', 'address', 'phone',
-            'email', 'owner_name', 'subscription_plan', 'subscription_start',
-            'subscription_end', 'is_active', 'created_at', 'updated_at',
+            'email', 'owner_name',
+            'subscription_plan', 'subscription_status',  # ⚡ Ajout status
+            'subscription_start', 'subscription_end',
+            'last_payment_date',
+            'is_active', 'created_at', 'updated_at',
+            'cancellation_reason', 'cancelled_at',  # ⚡ Ajout
         ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-
-
+        read_only_fields = [
+            'id', 'created_at', 'updated_at',
+            'subscription_status', 'subscription_plan',
+            'subscription_start', 'subscription_end',
+            'cancellation_reason', 'cancelled_at',
+        ]
+        
+        
 class UserSerializer(serializers.ModelSerializer):
     shop = ShopSerializer(read_only=True)
     
@@ -269,3 +278,21 @@ class AddShopUserSerializer(serializers.Serializer):
         default='SELLER',
     )
     password = serializers.CharField(min_length=6, write_only=True, required=False)
+    
+    
+# ═══════════════════════════════════════════════════════════
+# ACTIONS ADMIN SUR LES ABONNEMENTS
+# ═══════════════════════════════════════════════════════════
+
+class GrantTrialSerializer(serializers.Serializer):
+    """Sérialiseur pour accorder un essai gratuit."""
+    days = serializers.IntegerField(min_value=1, max_value=365, default=15)
+    plan = serializers.ChoiceField(
+        choices=['ESSENTIEL', 'PRO', 'BUSINESS'],
+        default='ESSENTIEL',
+    )
+
+
+class CancelSubscriptionSerializer(serializers.Serializer):
+    """Sérialiseur pour annuler un abonnement."""
+    reason = serializers.CharField(min_length=5, max_length=500)

@@ -20,6 +20,8 @@ from .serializers import (
     AddShopUserSerializer,
     ChangePasswordSerializer,
     generate_secure_password,
+    GrantTrialSerializer,
+    CancelSubscriptionSerializer,
 )
 from django.db import transaction
 from accounts.permissions import get_user_role
@@ -741,4 +743,142 @@ class VerifyOTPView(APIView):
         return Response({
             'user': UserSerializer(user).data,
             'tokens': tokens,
+        }, status=status.HTTP_200_OK)
+        
+# ═══════════════════════════════════════════════════════════
+# GESTION DES ABONNEMENTS (ADMIN)
+# ═══════════════════════════════════════════════════════════
+
+class GrantTrialView(APIView):
+    """
+    POST /api/v1/admin/shops/<shop_id>/grant-trial/
+    Body: {"days": 15, "plan": "ESSENTIEL"}
+
+    Accorde un essai gratuit à une boutique.
+    Réservé aux superusers.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, shop_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            shop = Shop.objects.get(id=shop_id)
+        except Shop.DoesNotExist:
+            return Response(
+                {'error': 'Boutique introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = GrantTrialSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        days = serializer.validated_data['days']
+        plan = serializer.validated_data['plan']
+
+        # ⚡ Activer l'abonnement
+        now = timezone.now()
+        shop.subscription_plan = plan
+        shop.subscription_status = 'TRIAL'
+        shop.subscription_start = now
+        shop.subscription_end = now + timedelta(days=days)
+        shop.is_active = True
+        shop.cancellation_reason = None
+        shop.cancelled_at = None
+        shop.save()
+
+        return Response({
+            'success': True,
+            'message': f'Essai de {days} jours accordé ({plan})',
+            'shop': ShopSerializer(shop).data,
+        }, status=status.HTTP_200_OK)
+
+
+class CancelSubscriptionView(APIView):
+    """
+    POST /api/v1/admin/shops/<shop_id>/cancel-subscription/
+    Body: {"reason": "Paiement non reçu"}
+
+    Annule l'abonnement d'une boutique.
+    Réservé aux superusers.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, shop_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            shop = Shop.objects.get(id=shop_id)
+        except Shop.DoesNotExist:
+            return Response(
+                {'error': 'Boutique introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        serializer = CancelSubscriptionSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        reason = serializer.validated_data['reason']
+
+        # ⚡ Annuler l'abonnement
+        shop.subscription_status = 'CANCELLED'
+        shop.is_active = False
+        shop.cancellation_reason = reason
+        shop.cancelled_at = timezone.now()
+        shop.save()
+
+        return Response({
+            'success': True,
+            'message': f'Abonnement annulé : {reason}',
+            'shop': ShopSerializer(shop).data,
+        }, status=status.HTTP_200_OK)
+
+
+class ReactivateShopView(APIView):
+    """
+    POST /api/v1/admin/shops/<shop_id>/reactivate/
+    Body: {"days": 30}
+
+    Réactive un abonnement annulé/expiré.
+    Réservé aux superusers.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, shop_id):
+        if not request.user.is_superuser:
+            return Response(
+                {'error': 'Accès réservé aux administrateurs'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        try:
+            shop = Shop.objects.get(id=shop_id)
+        except Shop.DoesNotExist:
+            return Response(
+                {'error': 'Boutique introuvable'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        days = int(request.data.get('days', 30))
+
+        now = timezone.now()
+        shop.subscription_status = 'ACTIVE'
+        shop.subscription_start = now
+        shop.subscription_end = now + timedelta(days=days)
+        shop.is_active = True
+        shop.cancellation_reason = None
+        shop.cancelled_at = None
+        shop.save()
+
+        return Response({
+            'success': True,
+            'message': f'Boutique réactivée pour {days} jours',
+            'shop': ShopSerializer(shop).data,
         }, status=status.HTTP_200_OK)

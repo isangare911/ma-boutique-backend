@@ -6,22 +6,31 @@ from .models import Shop
 TRIAL_DAYS = 30
 GRACE_PERIOD_DAYS = 7
 
+# ⚡ Statuts qui ne doivent JAMAIS être modifiés par check_status
+FROZEN_STATUSES = ['PENDING_VALIDATION', 'CANCELLED']
+
 
 class SubscriptionService:
     """Gère la logique d'abonnement."""
 
     @staticmethod
     def check_status(shop):
-        """Vérifie et met à jour le statut de l'abonnement."""
+        """
+        Vérifie et met à jour le statut de l'abonnement.
+        ⚡ Ne touche PAS aux statuts PENDING_VALIDATION ou CANCELLED.
+        """
+        # ⚡ Ne pas toucher si le statut est figé
+        if shop.subscription_status in FROZEN_STATUSES:
+            return shop.subscription_status
+
         now = timezone.now()
 
-        # Si pas de date de fin, c'est un essai en cours
+        # Si pas de date de fin → essai en cours
         if shop.subscription_end is None:
             trial_end = shop.subscription_start + timedelta(days=TRIAL_DAYS)
             if now < trial_end:
                 shop.subscription_status = 'TRIAL'
             else:
-                # Essai terminé, on entre en période de grâce
                 grace_end = trial_end + timedelta(days=GRACE_PERIOD_DAYS)
                 if now < grace_end:
                     shop.subscription_status = 'GRACE_PERIOD'
@@ -36,7 +45,6 @@ class SubscriptionService:
         if now < shop.subscription_end:
             shop.subscription_status = 'ACTIVE'
         else:
-            # Vérifier la période de grâce
             grace_end = shop.subscription_end + timedelta(days=GRACE_PERIOD_DAYS)
             if now < grace_end:
                 shop.subscription_status = 'GRACE_PERIOD'
@@ -49,12 +57,20 @@ class SubscriptionService:
     @staticmethod
     def is_active(shop):
         """Vrai si l'abonnement permet de vendre."""
+        # ⚡ PENDING_VALIDATION et CANCELLED ne sont JAMAIS actifs
+        if shop.subscription_status in FROZEN_STATUSES:
+            return False
+
         status = SubscriptionService.check_status(shop)
         return status in ['TRIAL', 'ACTIVE']
 
     @staticmethod
     def get_days_remaining(shop):
         """Retourne le nombre de jours restants."""
+        # ⚡ Pas d'abonnement en cours → 0 jour
+        if shop.subscription_status in FROZEN_STATUSES:
+            return 0
+
         now = timezone.now()
         if shop.subscription_end is None:
             trial_end = shop.subscription_start + timedelta(days=TRIAL_DAYS)
@@ -71,11 +87,15 @@ class SubscriptionService:
         shop.subscription_status = 'ACTIVE'
         shop.last_payment_date = now
 
-        # Prolonger l'abonnement existant si encore actif
+        # Prolonger si encore actif
         if shop.subscription_end and shop.subscription_end > now:
             shop.subscription_end = shop.subscription_end + timedelta(days=duration_days)
         else:
             shop.subscription_end = now + timedelta(days=duration_days)
+
+        # ⚡ Nettoyer les marques d'annulation
+        shop.cancellation_reason = None
+        shop.cancelled_at = None
 
         shop.save()
         return shop

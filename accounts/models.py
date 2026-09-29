@@ -24,27 +24,40 @@ class Shop(models.Model):
     subscription_plan = models.CharField(
         max_length=20,
         choices=[
-            ('TRIAL', 'Essai gratuit'),
             ('ESSENTIEL', 'Essentiel'),
             ('PRO', 'Pro'),
             ('BUSINESS', 'Business'),
         ],
-        default='TRIAL',
+        blank=True,
+        default='',
     )
     subscription_status = models.CharField(
         max_length=20,
         choices=[
+            ('PENDING_VALIDATION', 'En attente de validation'),
             ('TRIAL', 'Période d\'essai'),
             ('ACTIVE', 'Actif'),
             ('GRACE_PERIOD', 'Période de grâce'),
             ('EXPIRED', 'Expiré'),
+            ('CANCELLED', 'Annulé'),
         ],
-        default='TRIAL',
+        default='PENDING_VALIDATION',
     )
 
     subscription_start = models.DateTimeField(default=timezone.now)
     subscription_end = models.DateTimeField(blank=True, null=True)
     last_payment_date = models.DateTimeField(null=True, blank=True)
+        # ⚡ Raison d'annulation par l'admin
+    cancellation_reason = models.TextField(
+        blank=True,
+        null=True,
+        verbose_name='Raison de l\'annulation',
+    )
+    cancelled_at = models.DateTimeField(
+        blank=True,
+        null=True,
+        verbose_name='Date d\'annulation',
+    )
     is_active = models.BooleanField(default=True)
 
     created_at = models.DateTimeField(auto_now_add=True)
