@@ -130,6 +130,12 @@ class User(AbstractUser):
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     date_joined = models.DateTimeField(default=timezone.now)
+    
+    # ⚡ NOUVEAU : mot de passe temporaire à changer
+    must_change_password = models.BooleanField(
+        default=False,
+        verbose_name='Doit changer le mot de passe',
+    )
 
     USERNAME_FIELD = 'phone'
     REQUIRED_FIELDS = []

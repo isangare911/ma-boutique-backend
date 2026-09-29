@@ -15,7 +15,7 @@ from .views import (
     AdminStatsView, AdminShopsView, AdminPaymentsView,
     AdminApprovePaymentView, AdminRejectPaymentView,
     ShopUserListView, ShopUserDetailView, AdminShopPaymentsView,
-    RequestOTPView, VerifyOTPView,
+    RequestOTPView, VerifyOTPView, ChangePasswordView,
 )
 
 app_name = 'accounts'
@@ -52,6 +52,8 @@ urlpatterns = [
         SubmitPaymentProofView.as_view(),
         name='payment-submit',
     ),
+    
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
     
     path(
         'payments/<str:payment_id>/cancel/',

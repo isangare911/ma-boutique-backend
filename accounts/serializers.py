@@ -1,8 +1,20 @@
+import secrets
+import string
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User, Shop
 from .models import Payment
 from .models import ShopUser
+
+
+# ═══════════════════════════════════════════════════════════
+# UTILITAIRE : génération de mot de passe sécurisé
+# ═══════════════════════════════════════════════════════════
+
+def generate_secure_password(length=10):
+    """Génère un mot de passe aléatoire sécurisé."""
+    alphabet = string.ascii_letters + string.digits
+    return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
 class ShopSerializer(serializers.ModelSerializer):
@@ -24,19 +36,20 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'phone', 'first_name', 'last_name', 'role',
             'shop', 'is_active', 'is_superuser', 'is_staff', 'date_joined',
+            'must_change_password',  # ⚡ NOUVEAU
         ]
-        read_only_fields = ['id', 'date_joined', 'is_superuser', 'is_staff']
+        read_only_fields = [
+            'id', 'date_joined', 'is_superuser', 'is_staff',
+            'must_change_password',
+        ]
 
 
 class RegisterSerializer(serializers.Serializer):
     """Inscription : crée une boutique + un propriétaire"""
-    # Utilisateur
     phone = serializers.CharField(max_length=30)
     password = serializers.CharField(min_length=6, write_only=True)
     first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
-    
-    # Boutique
     shop_name = serializers.CharField(max_length=200)
     currency = serializers.CharField(max_length=10, default='FCFA')
 
@@ -48,14 +61,12 @@ class RegisterSerializer(serializers.Serializer):
         return value
 
     def create(self, validated_data):
-        # Créer la boutique
         shop = Shop.objects.create(
             name=validated_data['shop_name'],
             currency=validated_data.get('currency', 'FCFA'),
             owner_name=f"{validated_data.get('first_name', '')} {validated_data.get('last_name', '')}".strip(),
         )
         
-        # Créer l'utilisateur propriétaire
         user = User.objects.create_user(
             phone=validated_data['phone'],
             password=validated_data['password'],
@@ -63,16 +74,10 @@ class RegisterSerializer(serializers.Serializer):
             last_name=validated_data.get('last_name', ''),
             role='OWNER',
             shop=shop,
+            must_change_password=False,  # ⚡ L'OWNER choisit son MDP
         )
 
-        # ⚡ Créer aussi l'entrée ShopUser pour le propriétaire
-        # Ça évite les créations à la volée dans ShopUserListView.get()
-        ShopUser.objects.create(
-            shop=shop,
-            user=user,
-            role='OWNER',
-        )
-        
+        ShopUser.objects.create(shop=shop, user=user, role='OWNER')
         return user
 
 
@@ -93,7 +98,23 @@ class LoginSerializer(serializers.Serializer):
         
         data['user'] = user
         return data
-    
+
+
+# ═══════════════════════════════════════════════════════════
+# CHANGEMENT DE MOT DE PASSE
+# ═══════════════════════════════════════════════════════════
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """Sérialiseur pour changer le mot de passe."""
+    old_password = serializers.CharField(write_only=True, required=False)
+    new_password = serializers.CharField(min_length=6, write_only=True)
+
+    def validate_new_password(self, value):
+        if len(value) < 6:
+            raise serializers.ValidationError('Minimum 6 caractères.')
+        return value
+
+
 from .subscription_service import SubscriptionService
 
 
@@ -172,6 +193,7 @@ PLANS = [
     },
 ]
 
+
 class PaymentSerializer(serializers.ModelSerializer):
     plan_name = serializers.SerializerMethodField()
     method_name = serializers.SerializerMethodField()
@@ -191,7 +213,7 @@ class PaymentSerializer(serializers.ModelSerializer):
             'payer_phone',
             'duration_days',
             'created_at',
-            'approved_at',       # ⚡ Remplacé (était paid_at)
+            'approved_at',
             'rejection_reason',
             'approved_by',
         ]
@@ -221,12 +243,17 @@ class ShopUserSerializer(serializers.ModelSerializer):
     first_name = serializers.CharField(source='user.first_name', read_only=True)
     last_name = serializers.CharField(source='user.last_name', read_only=True)
     is_superuser = serializers.BooleanField(source='user.is_superuser', read_only=True)
+    must_change_password = serializers.BooleanField(
+        source='user.must_change_password',
+        read_only=True,
+    )
 
     class Meta:
         model = ShopUser
         fields = [
             'id', 'user_id', 'phone', 'first_name', 'last_name',
             'role', 'is_active', 'is_superuser',
+            'must_change_password',  # ⚡ NOUVEAU
             'permissions', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
