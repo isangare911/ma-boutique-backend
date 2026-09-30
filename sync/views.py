@@ -87,6 +87,21 @@ class SyncView(APIView):
         }, status=status.HTTP_200_OK)
 
     # ═══════════════════════════════════════════════════════════
+    # HELPERS DE SÉCURITÉ
+    # ═══════════════════════════════════════════════════════════
+
+    def _check_no_conflict(self, model, entity_id, shop, entity_label):
+        """
+        ⚡ Vérifie que l'entité n'appartient pas déjà à une autre boutique.
+        Empêche qu'un user écrase les données d'une autre boutique.
+        """
+        existing = model.objects.filter(id=entity_id).first()
+        if existing and existing.shop_id != shop.id:
+            raise Exception(
+                f'Conflit : {entity_label} {entity_id} appartient à une autre boutique'
+            )
+
+    # ═══════════════════════════════════════════════════════════
     # ROUTEUR
     # ═══════════════════════════════════════════════════════════
 
@@ -121,7 +136,7 @@ class SyncView(APIView):
         handler(shop, operation_type, entity_id, payload)
 
     # ═══════════════════════════════════════════════════════════
-    # HANDLERS (identiques à ton original)
+    # HANDLERS
     # ═══════════════════════════════════════════════════════════
 
     def _handle_product(self, shop, op_type, entity_id, payload):
@@ -129,6 +144,10 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             Product.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(Product, entity_id, shop, 'le produit')
+
         Product.objects.update_or_create(
             id=entity_id,
             defaults={'shop': shop, **{
@@ -144,6 +163,10 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             Customer.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(Customer, entity_id, shop, 'le client')
+
         Customer.objects.update_or_create(
             id=entity_id,
             defaults={'shop': shop, **{
@@ -161,6 +184,9 @@ class SyncView(APIView):
             Sale.objects.filter(id=entity_id, shop=shop).update(status='CANCELLED')
             return
         if op_type == 'CREATE':
+            # ⚡ Vérifier le conflit
+            self._check_no_conflict(Sale, entity_id, shop, 'la vente')
+
             sale, _ = Sale.objects.update_or_create(
                 id=entity_id,
                 defaults={
@@ -189,6 +215,10 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             Credit.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(Credit, entity_id, shop, 'le crédit')
+
         Credit.objects.update_or_create(
             id=entity_id,
             defaults={
@@ -222,6 +252,9 @@ class SyncView(APIView):
             Expense.objects.filter(id=entity_id, shop=shop).delete()
             return
 
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(Expense, entity_id, shop, 'la dépense')
+
         expense_date = payload.get('expense_date')
         if expense_date:
             parsed = parse_datetime(expense_date)
@@ -245,6 +278,10 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             Supplier.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(Supplier, entity_id, shop, 'le fournisseur')
+
         Supplier.objects.update_or_create(
             id=entity_id,
             defaults={'shop': shop, **{
@@ -290,6 +327,9 @@ class SyncView(APIView):
         if op_type == 'DELETE':
             CashSession.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ⚡ Vérifier le conflit
+        self._check_no_conflict(CashSession, entity_id, shop, 'la session de caisse')
 
         opened_at = payload.get('opened_at')
         if opened_at:
