@@ -559,3 +559,87 @@ class SyncStatusView(APIView):
                 for log in logs
             ],
         })
+        
+# ═══════════════════════════════════════════════════════════
+# SYNC FULL (PULL) — Serveur → Client
+# ═══════════════════════════════════════════════════════════
+from .serializers_pull import (
+    ProductPullSerializer,
+    CustomerPullSerializer,
+    CreditPullSerializer,
+    CreditPaymentPullSerializer,
+    SalePullSerializer,
+    ExpensePullSerializer,
+    SupplierPullSerializer,
+    SupplierTransactionPullSerializer,
+    CashSessionPullSerializer,
+    ShopPullSerializer,
+)
+from inventory.models import Product
+from customers.models import Customer, Credit, CreditPayment
+from sales.models import Sale
+from finance.models import (
+    Expense, Supplier, SupplierTransaction, CashSession
+)
+from accounts.models import Shop
+
+
+class SyncFullView(APIView):
+    """
+    GET /api/v1/sync/full/
+
+    Renvoie TOUTES les données du shop de l'utilisateur connecté.
+    Utilisé par Flutter au démarrage pour se synchroniser.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        shop = request.user.shop
+
+        if not shop:
+            return Response(
+                {'error': 'Aucune boutique associée à ce compte'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # ═══════════════════════════════════════════════════════
+        # Récupérer toutes les données du shop
+        # ═══════════════════════════════════════════════════════
+        products = Product.objects.filter(shop=shop)
+        customers = Customer.objects.filter(shop=shop)
+        credits = Credit.objects.filter(shop=shop)
+        credit_payments = CreditPayment.objects.filter(credit__shop=shop)
+        sales = Sale.objects.filter(shop=shop).prefetch_related('items')
+        expenses = Expense.objects.filter(shop=shop)
+        suppliers = Supplier.objects.filter(shop=shop)
+        supplier_transactions = SupplierTransaction.objects.filter(
+            supplier__shop=shop
+        )
+        cash_sessions = CashSession.objects.filter(
+            shop=shop
+        ).prefetch_related('movements')
+
+        # ═══════════════════════════════════════════════════════
+        # Sérialiser
+        # ═══════════════════════════════════════════════════════
+        data = {
+            'server_time': timezone.now().isoformat(),
+            'shop': ShopPullSerializer(shop).data,
+            'products': ProductPullSerializer(products, many=True).data,
+            'customers': CustomerPullSerializer(customers, many=True).data,
+            'credits': CreditPullSerializer(credits, many=True).data,
+            'credit_payments': CreditPaymentPullSerializer(
+                credit_payments, many=True
+            ).data,
+            'sales': SalePullSerializer(sales, many=True).data,
+            'expenses': ExpensePullSerializer(expenses, many=True).data,
+            'suppliers': SupplierPullSerializer(suppliers, many=True).data,
+            'supplier_transactions': SupplierTransactionPullSerializer(
+                supplier_transactions, many=True
+            ).data,
+            'cash_sessions': CashSessionPullSerializer(
+                cash_sessions, many=True
+            ).data,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
