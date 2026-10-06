@@ -1,19 +1,10 @@
 import uuid
-import re
 from django.utils import timezone
 from django.db import transaction
 from django.db.models import Sum, Count, Q
 from datetime import timedelta
 from .models import Payment, Shop
 from .subscription_service import SubscriptionService
-
-
-# ⚡ Regex de validation par méthode (anti-fraude)
-TRANSACTION_ID_PATTERNS = {
-    'ORANGE_MONEY': r'^[A-Z0-9]{8,15}$',
-    'WAVE': r'^[A-Z0-9\-]{8,40}$',
-    'MOOV_MONEY': r'^[0-9]{8,15}$',
-}
 
 
 class MobileMoneyService:
@@ -133,17 +124,22 @@ class MobileMoneyService:
 
         transaction_id = (transaction_id or '').strip()
 
-        if not transaction_id or len(transaction_id) < 4:
-            raise ValueError('Code de transaction invalide')
+        # ⚡ Validation minimale : non-vide + longueur raisonnable.
+        # L'admin validera manuellement en vérifiant ses SMS Orange Money.
+        if not transaction_id:
+            raise ValueError('Code de transaction requis')
 
-        # ⚡ Validation du format selon la méthode
-        pattern = TRANSACTION_ID_PATTERNS.get(payment.method)
-        if pattern and not re.match(pattern, transaction_id):
+        if len(transaction_id) < 4:
             raise ValueError(
-                'Format de code invalide pour cette méthode de paiement'
+                'Code de transaction trop court (minimum 4 caractères)'
             )
 
-        # ⚡ Unicité
+        if len(transaction_id) > 200:
+            raise ValueError(
+                'Code de transaction trop long (maximum 200 caractères)'
+            )
+
+        # ⚡ Unicité : le code ne doit pas être utilisé ailleurs
         existing = Payment.objects.filter(
             transaction_id=transaction_id,
         ).exclude(id=payment.id).first()
