@@ -1,4 +1,6 @@
 from django.db import models
+from django.core.validators import MinValueValidator
+from decimal import Decimal
 import uuid
 
 
@@ -12,10 +14,22 @@ class Product(models.Model):
     reference = models.CharField(max_length=100, blank=True, null=True)
     barcode = models.CharField(max_length=100, blank=True, null=True)
     category = models.CharField(max_length=100, blank=True, null=True)
-    purchase_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    selling_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    quantity = models.IntegerField(default=0)
-    alert_threshold = models.IntegerField(default=5)
+    purchase_price = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    selling_price = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    quantity = models.IntegerField(
+        default=0,
+        validators=[MinValueValidator(0)],  # ⚡ pas de stock négatif
+    )
+    alert_threshold = models.IntegerField(
+        default=5,
+        validators=[MinValueValidator(0)],
+    )
     unit = models.CharField(max_length=50, blank=True, null=True)
     image_path = models.CharField(max_length=500, blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)

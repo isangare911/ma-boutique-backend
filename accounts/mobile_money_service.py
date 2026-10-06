@@ -1,9 +1,19 @@
 import uuid
+import re
 from django.utils import timezone
+from django.db import transaction
 from django.db.models import Sum, Count, Q
 from datetime import timedelta
 from .models import Payment, Shop
 from .subscription_service import SubscriptionService
+
+
+# ⚡ Regex de validation par méthode (anti-fraude)
+TRANSACTION_ID_PATTERNS = {
+    'ORANGE_MONEY': r'^[A-Z0-9]{8,15}$',
+    'WAVE': r'^[A-Z0-9\-]{8,40}$',
+    'MOOV_MONEY': r'^[0-9]{8,15}$',
+}
 
 
 class MobileMoneyService:
@@ -16,28 +26,21 @@ class MobileMoneyService:
     }
 
     # ═══════════════════════════════════════════════════════════
-    # CRÉER UN PAIEMENT (avec code unique généré proprement)
+    # CRÉER UN PAIEMENT
     # ═══════════════════════════════════════════════════════════
     @staticmethod
+    @transaction.atomic
     def create_payment(shop, plan, method, payer_phone=None):
-        """
-        Crée une demande de paiement avec un code unique.
-        
-        ⚡ IMPORTANT : on utilise Payment() + save() au lieu de 
-        objects.create() pour que la méthode save() du modèle 
-        génère bien le payment_code.
-        """
         amount = Payment.get_plan_price(plan)
         if amount == 0:
             raise ValueError(f'Plan invalide: {plan}')
 
-        # ⚡ Annuler les anciens paiements en attente pour cette boutique
+        # Annuler les anciens paiements en attente
         Payment.objects.filter(
             shop=shop,
             status__in=['PENDING', 'PENDING_REVIEW'],
         ).update(status='CANCELLED')
 
-        # ⚡ Créer le paiement (le payment_code sera généré par save())
         payment = Payment(
             shop=shop,
             plan=plan,
@@ -52,11 +55,10 @@ class MobileMoneyService:
         return payment
 
     # ═══════════════════════════════════════════════════════════
-    # INSTRUCTIONS AVEC CODE UNIQUE
+    # INSTRUCTIONS
     # ═══════════════════════════════════════════════════════════
     @staticmethod
     def get_payment_instructions(payment):
-        """Retourne les instructions avec le code unique."""
         merchant_number = MobileMoneyService.MERCHANT_NUMBERS.get(
             payment.method, ''
         )
@@ -113,13 +115,13 @@ class MobileMoneyService:
         }
 
     # ═══════════════════════════════════════════════════════════
-    # SOUMETTRE LA PREUVE DE PAIEMENT
+    # SOUMETTRE LA PREUVE
     # ═══════════════════════════════════════════════════════════
     @staticmethod
+    @transaction.atomic
     def submit_payment_proof(payment_id, transaction_id, user):
-        """Soumet la preuve de paiement. Passe en PENDING_REVIEW."""
         try:
-            payment = Payment.objects.get(
+            payment = Payment.objects.select_for_update().get(
                 id=payment_id,
                 shop=user.shop,
             )
@@ -129,10 +131,19 @@ class MobileMoneyService:
         if payment.status != 'PENDING':
             raise ValueError('Ce paiement a déjà été traité')
 
-        if not transaction_id or len(transaction_id.strip()) < 4:
+        transaction_id = (transaction_id or '').strip()
+
+        if not transaction_id or len(transaction_id) < 4:
             raise ValueError('Code de transaction invalide')
 
-        # ⚡ Vérifier que le code de transaction n'a jamais été utilisé
+        # ⚡ Validation du format selon la méthode
+        pattern = TRANSACTION_ID_PATTERNS.get(payment.method)
+        if pattern and not re.match(pattern, transaction_id):
+            raise ValueError(
+                'Format de code invalide pour cette méthode de paiement'
+            )
+
+        # ⚡ Unicité
         existing = Payment.objects.filter(
             transaction_id=transaction_id,
         ).exclude(id=payment.id).first()
@@ -140,7 +151,7 @@ class MobileMoneyService:
         if existing:
             raise ValueError('Ce code de transaction a déjà été utilisé')
 
-        payment.transaction_id = transaction_id.strip()
+        payment.transaction_id = transaction_id
         payment.status = 'PENDING_REVIEW'
         payment.save()
 
@@ -150,10 +161,10 @@ class MobileMoneyService:
     # APPROUVER / REJETER (Admin uniquement)
     # ═══════════════════════════════════════════════════════════
     @staticmethod
+    @transaction.atomic
     def approve_payment(payment_id, admin_user):
-        """Approuve un paiement et active l'abonnement."""
         try:
-            payment = Payment.objects.get(id=payment_id)
+            payment = Payment.objects.select_for_update().get(id=payment_id)
         except Payment.DoesNotExist:
             raise ValueError('Paiement introuvable')
 
@@ -168,7 +179,6 @@ class MobileMoneyService:
         payment.approved_at = timezone.now()
         payment.save()
 
-        # ⚡ Activer l'abonnement
         SubscriptionService.activate_plan(
             payment.shop,
             payment.plan,
@@ -178,10 +188,10 @@ class MobileMoneyService:
         return payment
 
     @staticmethod
+    @transaction.atomic
     def reject_payment(payment_id, reason, admin_user):
-        """Rejette un paiement."""
         try:
-            payment = Payment.objects.get(id=payment_id)
+            payment = Payment.objects.select_for_update().get(id=payment_id)
         except Payment.DoesNotExist:
             raise ValueError('Paiement introuvable')
 
@@ -197,10 +207,12 @@ class MobileMoneyService:
         return payment
 
     @staticmethod
+    @transaction.atomic
     def cancel_payment(payment_id, user):
-        """Annule un paiement en attente (client)."""
         try:
-            payment = Payment.objects.get(id=payment_id, shop=user.shop)
+            payment = Payment.objects.select_for_update().get(
+                id=payment_id, shop=user.shop
+            )
         except Payment.DoesNotExist:
             raise ValueError('Paiement introuvable')
 
@@ -212,18 +224,16 @@ class MobileMoneyService:
         return payment
 
     # ═══════════════════════════════════════════════════════════
-    # STATISTIQUES POUR LE DASHBOARD ADMIN
+    # STATISTIQUES ADMIN
     # ═══════════════════════════════════════════════════════════
     @staticmethod
     def get_admin_stats():
-        """Statistiques globales pour le dashboard admin."""
         now = timezone.now()
         start_of_month = now.replace(
             day=1, hour=0, minute=0, second=0, microsecond=0
         )
         start_of_week = now - timedelta(days=7)
 
-        # ─── Revenus ───
         total_revenue = Payment.objects.filter(
             status='APPROVED'
         ).aggregate(total=Sum('amount'))['total'] or 0
@@ -238,19 +248,16 @@ class MobileMoneyService:
             approved_at__gte=start_of_week,
         ).aggregate(total=Sum('amount'))['total'] or 0
 
-        # ─── Paiements ───
         total_payments = Payment.objects.filter(status='APPROVED').count()
         pending_review = Payment.objects.filter(status='PENDING_REVIEW').count()
         rejected_payments = Payment.objects.filter(status='REJECTED').count()
 
-        # ─── Boutiques ───
         total_shops = Shop.objects.count()
         active_shops = Shop.objects.filter(subscription_status='ACTIVE').count()
         trial_shops = Shop.objects.filter(subscription_status='TRIAL').count()
         grace_shops = Shop.objects.filter(subscription_status='GRACE_PERIOD').count()
         expired_shops = Shop.objects.filter(subscription_status='EXPIRED').count()
 
-        # ─── Croissance ───
         new_shops_this_month = Shop.objects.filter(
             created_at__gte=start_of_month
         ).count()
@@ -259,18 +266,15 @@ class MobileMoneyService:
             created_at__gte=start_of_week
         ).count()
 
-        # ─── Revenus par plan ───
         revenue_by_plan = list(
             Payment.objects.filter(status='APPROVED')
             .values('plan')
             .annotate(total=Sum('amount'), count=Count('id'))
             .order_by('-total')
         )
-        # Convertir Decimal en float pour JSON
         for item in revenue_by_plan:
             item['total'] = float(item['total'] or 0)
 
-        # ─── Revenus par méthode ───
         revenue_by_method = list(
             Payment.objects.filter(status='APPROVED')
             .values('method')
@@ -280,7 +284,6 @@ class MobileMoneyService:
         for item in revenue_by_method:
             item['total'] = float(item['total'] or 0)
 
-        # ─── Taux de réabonnement ───
         renewal_count = Shop.objects.annotate(
             payment_count=Count(
                 'payments',
@@ -292,7 +295,6 @@ class MobileMoneyService:
             (renewal_count / active_shops * 100) if active_shops > 0 else 0
         )
 
-        # ─── MRR (Monthly Recurring Revenue) ───
         mrr = float(monthly_revenue)
 
         return {
@@ -315,30 +317,22 @@ class MobileMoneyService:
             'revenue_by_method': revenue_by_method,
         }
 
-    # ═══════════════════════════════════════════════════════════
-    # LISTE DES BOUTIQUES POUR L'ADMIN
-    # ═══════════════════════════════════════════════════════════
     @staticmethod
     def get_all_shops_with_stats():
-        """Retourne toutes les boutiques avec leurs stats."""
         shops = Shop.objects.all().order_by('-created_at')
 
         result = []
         for shop in shops:
-            # Nombre de paiements approuvés
             approved_payments = shop.payments.filter(status='APPROVED').count()
 
-            # Total payé
             total_paid = shop.payments.filter(
                 status='APPROVED'
             ).aggregate(total=Sum('amount'))['total'] or 0
 
-            # Dernier paiement
             last_payment = shop.payments.filter(
                 status='APPROVED'
             ).order_by('-approved_at').first()
 
-            # Jours restants
             days_remaining = 0
             if shop.subscription_end:
                 delta = shop.subscription_end - timezone.now()
@@ -370,12 +364,8 @@ class MobileMoneyService:
 
         return result
 
-    # ═══════════════════════════════════════════════════════════
-    # LISTE DES PAIEMENTS POUR L'ADMIN
-    # ═══════════════════════════════════════════════════════════
     @staticmethod
     def get_all_payments(status_filter=None, limit=100):
-        """Retourne tous les paiements avec filtres."""
         payments = Payment.objects.select_related('shop').all()
 
         if status_filter:
@@ -383,10 +373,6 @@ class MobileMoneyService:
 
         return payments.order_by('-created_at')[:limit]
 
-    # ═══════════════════════════════════════════════════════════
-    # HISTORIQUE D'UNE BOUTIQUE
-    # ═══════════════════════════════════════════════════════════
     @staticmethod
     def get_shop_payments(shop, limit=20):
-        """Retourne l'historique des paiements d'une boutique."""
         return Payment.objects.filter(shop=shop).order_by('-created_at')[:limit]

@@ -1,6 +1,7 @@
 import base64
 import logging
 import requests
+from urllib.parse import quote
 from django.conf import settings
 from django.core.cache import cache
 
@@ -27,7 +28,6 @@ def _get_access_token():
             '(ORANGE_CLIENT_ID / ORANGE_CLIENT_SECRET)'
         )
 
-    # Auth Basic : client_id:client_secret en base64
     credentials = (
         f'{settings.ORANGE_CLIENT_ID}:{settings.ORANGE_CLIENT_SECRET}'
     )
@@ -53,8 +53,11 @@ def _get_access_token():
         if not token:
             raise ValueError('Pas d\'access_token dans la réponse Orange')
 
-        # Cache 50 minutes (le token Orange dure 1h)
-        cache.set(cache_key, token, timeout=50 * 60)
+        # ⚡ Utiliser le expires_in réel si fourni, sinon 50 min
+        expires_in = payload.get('expires_in', 3600)
+        cache_timeout = max(60, int(expires_in) - 60)
+
+        cache.set(cache_key, token, timeout=cache_timeout)
 
         logger.info('✓ Orange: nouveau token obtenu')
         return token
@@ -79,8 +82,16 @@ def send_sms(phone, message):
     Returns:
         dict: {'success': bool, 'message_id': str, 'error': str}
     """
-    # Nettoyer le numéro (retirer espaces, tirets)
-    phone = phone.replace(' ', '').replace('-', '')
+    # ⚡ Valider la config avant tout
+    if not settings.ORANGE_SENDER_NUMBER:
+        logger.error('ORANGE_SENDER_NUMBER non configuré')
+        return {
+            'success': False,
+            'error': 'Configuration SMS incomplète (sender non défini)',
+        }
+
+    # ⚡ Nettoyer le numéro (retirer espaces, tirets, parenthèses)
+    phone = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
 
     if not phone.startswith('+'):
         phone = '+' + phone
@@ -93,10 +104,7 @@ def send_sms(phone, message):
             'error': f'Erreur token: {str(e)}',
         }
 
-    # L'API Orange demande le sender sous forme URL-encodée
-    from urllib.parse import quote
     sender = quote(settings.ORANGE_SENDER_NUMBER, safe='')
-
     url = f'{settings.ORANGE_SMS_URL}/{sender}/requests'
 
     headers = {
@@ -146,12 +154,13 @@ def send_sms(phone, message):
                 'message_id': resource,
             }
         else:
+            # ⚡ Tronquer la réponse pour éviter les fuites
             logger.error(
-                f'Orange SMS error {response.status_code}: {response.text}'
+                f'Orange SMS error {response.status_code}: {response.text[:200]}'
             )
             return {
                 'success': False,
-                'error': f'HTTP {response.status_code}: {response.text[:200]}',
+                'error': f'HTTP {response.status_code}',
             }
 
     except requests.RequestException as e:

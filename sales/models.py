@@ -1,4 +1,6 @@
 from django.db import models
+from django.core.validators import MinValueValidator
+from decimal import Decimal
 import uuid
 
 
@@ -8,7 +10,7 @@ class Sale(models.Model):
         ('COMPLETED', 'Complétée'),
         ('CANCELLED', 'Annulée'),
     ]
-    
+
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     shop = models.ForeignKey(
         'accounts.Shop', on_delete=models.CASCADE, related_name='sales'
@@ -20,8 +22,14 @@ class Sale(models.Model):
         blank=True,
         related_name='sales',
     )
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    total_profit = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    total_profit = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
     payment_method = models.CharField(max_length=50)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='COMPLETED')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -56,10 +64,21 @@ class SaleItem(models.Model):
         related_name='sale_items',
     )
     product_name = models.CharField(max_length=200)  # Dénormalisé
-    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
-    purchase_price = models.DecimalField(max_digits=12, decimal_places=2, default=0)
-    quantity = models.IntegerField()
-    subtotal = models.DecimalField(max_digits=12, decimal_places=2)
+    unit_price = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    purchase_price = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    quantity = models.IntegerField(
+        validators=[MinValueValidator(1)],  # ⚡ > 0 obligatoire
+    )
+    subtotal = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
 
     class Meta:
         db_table = 'sale_items'
@@ -70,6 +89,7 @@ class SaleItem(models.Model):
     def save(self, *args, **kwargs):
         if not self.id:
             self.id = f'ITEM-{uuid.uuid4().hex[:12].upper()}'
-        if not self.subtotal:
+        # ⚡ Toujours recalculer le subtotal (plus de bug si quantity change)
+        if self.unit_price is not None and self.quantity is not None:
             self.subtotal = self.unit_price * self.quantity
         super().save(*args, **kwargs)

@@ -12,7 +12,8 @@ class SyncOperationSerializer(serializers.Serializer):
 
 class SyncRequestSerializer(serializers.Serializer):
     """Requête globale de synchronisation"""
-    operations = SyncOperationSerializer(many=True)
+    # ⚡ max_length=200 pour éviter le DoS
+    operations = SyncOperationSerializer(many=True, max_length=200)
 
 
 class SyncResultSerializer(serializers.Serializer):

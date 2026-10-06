@@ -259,13 +259,14 @@ class Payment(models.Model):
 
     @staticmethod
     def _generate_code():
-        """Génère un code unique au format MB-XXXX-XXXX-XXXX."""
-        import random
+        """Génère un code unique au format MB-XXXX-XXXX-XXXX (crypto-safe)."""
+        import secrets
         import string
-        
+
+        alphabet = string.ascii_uppercase + string.digits
         while True:
             parts = [
-                ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
+                ''.join(secrets.choice(alphabet) for _ in range(4))
                 for _ in range(3)
             ]
             code = f'MB-{parts[0]}-{parts[1]}-{parts[2]}'

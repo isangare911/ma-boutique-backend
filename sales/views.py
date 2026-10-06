@@ -2,7 +2,8 @@ from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db import models
+from django.db import transaction
+from django.db.models import F
 from django.utils import timezone
 from datetime import timedelta
 
@@ -11,6 +12,10 @@ from .serializers import SaleSerializer
 from accounts.permissions import (
     IsSameShop, CanViewSales, CanEditSales, CanCancelSale,
 )
+
+
+def _user_has_shop(request):
+    return bool(getattr(request.user, 'shop', None))
 
 
 class SaleViewSet(viewsets.ModelViewSet):
@@ -22,7 +27,7 @@ class SaleViewSet(viewsets.ModelViewSet):
     - Annulation : OWNER, MANAGER
     """
     serializer_class = SaleSerializer
-    http_method_names = ['get', 'post', 'patch', 'head', 'options']
+    http_method_names = ['get', 'post', 'head', 'options']  # ⚡ PATCH retiré
 
     def get_permissions(self):
         if self.request.method in ('GET', 'HEAD', 'OPTIONS'):
@@ -34,6 +39,10 @@ class SaleViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        # ⚡ Garde-fou
+        if not _user_has_shop(self.request):
+            return Sale.objects.none()
+
         qs = Sale.objects.filter(shop=self.request.user.shop)
 
         period = self.request.query_params.get('period')
@@ -54,6 +63,7 @@ class SaleViewSet(viewsets.ModelViewSet):
         return qs.select_related('customer').prefetch_related('items')
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def cancel(self, request, pk=None):
         """Annule une vente et restaure le stock"""
         sale = self.get_object()
@@ -61,12 +71,18 @@ class SaleViewSet(viewsets.ModelViewSet):
         if sale.status == 'CANCELLED':
             return Response({'error': 'Vente déjà annulée'}, status=400)
 
+        # ⚡ Verrouiller la vente
+        sale = Sale.objects.select_for_update().get(id=sale.id)
+
         from inventory.models import Product
+
         for item in sale.items.all():
             if item.product:
-                Product.objects.filter(id=item.product.id).update(
-                    quantity=models.F('quantity') + item.quantity
-                )
+                # ⚡ Vérifier que le produit appartient à la boutique (défense en profondeur)
+                Product.objects.filter(
+                    id=item.product.id,
+                    shop=sale.shop,  # ⚡ filtre de sécurité
+                ).update(quantity=F('quantity') + item.quantity)
 
         sale.status = 'CANCELLED'
         sale.save()

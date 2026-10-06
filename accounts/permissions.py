@@ -10,7 +10,8 @@ def get_user_role(user):
     """
     Retourne le rôle de l'utilisateur dans sa boutique.
     - superuser → 'OWNER' (bypass admin SaaS)
-    - sinon → ShopUser.role du shop courant, ou fallback sur User.role
+    - sinon → ShopUser.role du shop courant
+    - fallback User.role UNIQUEMENT si aucune ShopUser n'existe (legacy)
     """
     if not user or not user.is_authenticated:
         return None
@@ -30,12 +31,30 @@ def get_user_role(user):
     if member:
         return member.role
 
-    # Fallback : si pas de ShopUser (legacy), utiliser User.role
-    return getattr(user, 'role', None)
+    # ⚡ Fallback UNIQUEMENT si l'utilisateur n'a AUCUNE membership (legacy pur)
+    if not ShopUser.objects.filter(user=user).exists():
+        return getattr(user, 'role', None)
+
+    # ⚡ L'utilisateur a des memberships mais inactives → aucun rôle
+    return None
 
 
 # ═══════════════════════════════════════════════════════════
-# IS_SAME_SHOP (déjà existant)
+# PERMISSION SUPERUSER (centralisée)
+# ═══════════════════════════════════════════════════════════
+
+class IsSuperUser(permissions.BasePermission):
+    """Autorise uniquement les superusers."""
+    def has_permission(self, request, view):
+        return bool(
+            request.user
+            and request.user.is_authenticated
+            and request.user.is_superuser
+        )
+
+
+# ═══════════════════════════════════════════════════════════
+# IS_SAME_SHOP
 # ═══════════════════════════════════════════════════════════
 
 class IsSameShop(permissions.BasePermission):

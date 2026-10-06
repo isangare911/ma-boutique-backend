@@ -2,31 +2,45 @@ from rest_framework import status, generics
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.db.models import Sum, Count, Q
 from django.utils import timezone
+from django.db import transaction
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from datetime import timedelta
 
-from .models import User, Shop, Payment
+from .models import User, Shop, Payment, ShopUser
 from .serializers import (
     UserSerializer, ShopSerializer, RegisterSerializer, LoginSerializer,
     PaymentSerializer, SubscriptionSerializer, PLANS,
+    ShopUserSerializer, AddShopUserSerializer, ChangePasswordSerializer,
+    generate_secure_password, GrantTrialSerializer, CancelSubscriptionSerializer,
 )
 from .subscription_service import SubscriptionService
 from .mobile_money_service import MobileMoneyService
-from .models import ShopUser
-from .serializers import (
-    ShopUserSerializer,
-    AddShopUserSerializer,
-    ChangePasswordSerializer,
-    generate_secure_password,
-    GrantTrialSerializer,
-    CancelSubscriptionSerializer,
-)
-from django.db import transaction
-from accounts.permissions import get_user_role
-from django.contrib.auth.password_validation import validate_password
-from django.core.exceptions import ValidationError as DjangoValidationError
+from accounts.permissions import get_user_role, IsSuperUser
+
+
+# ═══════════════════════════════════════════════════════════
+# THROTTLES
+# ═══════════════════════════════════════════════════════════
+
+class LoginThrottle(AnonRateThrottle):
+    scope = 'login'
+
+
+class RegisterThrottle(AnonRateThrottle):
+    scope = 'register'
+
+
+class PaymentCreateThrottle(AnonRateThrottle):
+    scope = 'payment_create'
+
+
+class PaymentSubmitThrottle(AnonRateThrottle):
+    scope = 'payment_submit'
 
 
 # ═══════════════════════════════════════════════════════════
@@ -51,6 +65,7 @@ def get_tokens_for_user(user):
 class RegisterView(APIView):
     """POST /api/v1/auth/register/ — Créer une boutique + propriétaire"""
     permission_classes = [AllowAny]
+    throttle_classes = [RegisterThrottle]
 
     def post(self, request):
         serializer = RegisterSerializer(data=request.data)
@@ -67,6 +82,7 @@ class RegisterView(APIView):
 class LoginView(APIView):
     """POST /api/v1/auth/login/ — Connexion par téléphone + mot de passe"""
     permission_classes = [AllowAny]
+    throttle_classes = [LoginThrottle]
 
     def post(self, request):
         serializer = LoginSerializer(
@@ -97,7 +113,11 @@ class ShopSettingsView(generics.RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
 
     def get_object(self):
-        return self.request.user.shop
+        shop = self.request.user.shop
+        if not shop:
+            from rest_framework.exceptions import NotFound
+            raise NotFound('Aucune boutique associée à ce compte')
+        return shop
 
 
 # ═══════════════════════════════════════════════════════════
@@ -121,7 +141,6 @@ class ChangePasswordView(APIView):
         new_password = serializer.validated_data['new_password']
         old_password = serializer.validated_data.get('old_password')
 
-        # Si must_change_password=True → pas besoin de l'ancien mot de passe
         if not user.must_change_password:
             if not old_password:
                 return Response(
@@ -134,7 +153,6 @@ class ChangePasswordView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
 
-        # Valider le nouveau mot de passe
         try:
             validate_password(new_password, user)
         except DjangoValidationError as e:
@@ -143,7 +161,6 @@ class ChangePasswordView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # Sauvegarder
         user.set_password(new_password)
         user.must_change_password = False
         user.save(update_fields=['password', 'must_change_password'])
@@ -160,7 +177,7 @@ class ChangePasswordView(APIView):
 # ═══════════════════════════════════════════════════════════
 
 class SubscriptionStatusView(APIView):
-    """GET /api/v1/subscription/status/ — État de l'abonnement"""
+    """GET /api/v1/subscription/status/"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -178,49 +195,21 @@ class SubscriptionStatusView(APIView):
 
 
 class SubscriptionPlansView(APIView):
-    """GET /api/v1/subscription/plans/ — Liste des plans"""
+    """GET /api/v1/subscription/plans/"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         return Response(PLANS)
 
 
-class SubscriptionActivateView(APIView):
-    """POST /api/v1/subscription/activate/ — Activer un plan (test admin)"""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        plan_code = request.data.get('plan')
-        duration_days = int(request.data.get('duration_days', 30))
-
-        if plan_code not in ['ESSENTIEL', 'PRO', 'BUSINESS']:
-            return Response(
-                {'error': 'Plan invalide'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        shop = request.user.shop
-        if not shop:
-            return Response(
-                {'error': 'Aucune boutique associée'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        SubscriptionService.activate_plan(shop, plan_code, duration_days)
-
-        return Response(SubscriptionSerializer(shop).data)
-
-
 # ═══════════════════════════════════════════════════════════
-# MOBILE MONEY (USSD manuel sécurisé)
+# MOBILE MONEY
 # ═══════════════════════════════════════════════════════════
 
 class CreatePaymentView(APIView):
-    """
-    POST /api/v1/payments/create/
-    Body: {"plan": "PRO", "method": "ORANGE_MONEY"}
-    """
+    """POST /api/v1/payments/create/"""
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PaymentCreateThrottle]
 
     def post(self, request):
         plan = request.data.get('plan')
@@ -274,6 +263,7 @@ class CreatePaymentView(APIView):
 class SubmitPaymentProofView(APIView):
     """POST /api/v1/payments/<payment_id>/submit/"""
     permission_classes = [IsAuthenticated]
+    throttle_classes = [PaymentSubmitThrottle]
 
     def post(self, request, payment_id):
         transaction_id = request.data.get('transaction_id', '').strip()
@@ -324,7 +314,7 @@ class CancelPaymentView(APIView):
 
 
 class PaymentListView(APIView):
-    """GET /api/v1/payments/ — Historique des paiements du client"""
+    """GET /api/v1/payments/"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -335,66 +325,36 @@ class PaymentListView(APIView):
 
 
 # ═══════════════════════════════════════════════════════════
-# VUES ADMIN (Dashboard propriétaire)
+# VUES ADMIN — toutes protégées par IsSuperUser
 # ═══════════════════════════════════════════════════════════
 
 class AdminStatsView(APIView):
-    """GET /api/v1/admin/stats/"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def get(self, request):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        stats = MobileMoneyService.get_admin_stats()
-        return Response(stats)
+        return Response(MobileMoneyService.get_admin_stats())
 
 
 class AdminShopsView(APIView):
-    """GET /api/v1/admin/shops/"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def get(self, request):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        shops = MobileMoneyService.get_all_shops_with_stats()
-        return Response(shops)
+        return Response(MobileMoneyService.get_all_shops_with_stats())
 
 
 class AdminPaymentsView(APIView):
-    """GET /api/v1/admin/payments/"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def get(self, request):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         status_filter = request.query_params.get('status')
         payments = MobileMoneyService.get_all_payments(status_filter)
         return Response(PaymentSerializer(payments, many=True).data)
 
 
 class AdminApprovePaymentView(APIView):
-    """POST /api/v1/admin/payments/<payment_id>/approve/"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def post(self, request, payment_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         try:
             payment = MobileMoneyService.approve_payment(payment_id, request.user)
             return Response({
@@ -409,16 +369,9 @@ class AdminApprovePaymentView(APIView):
 
 
 class AdminRejectPaymentView(APIView):
-    """POST /api/v1/admin/payments/<payment_id>/reject/"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def post(self, request, payment_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         reason = request.data.get('reason', '').strip()
         if not reason:
             return Response(
@@ -442,18 +395,9 @@ class AdminRejectPaymentView(APIView):
 
 
 class AdminShopPaymentsView(APIView):
-    """
-    GET /api/v1/admin/shops/<shop_id>/payments/
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def get(self, request, shop_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         try:
             shop = Shop.objects.get(id=shop_id)
         except Shop.DoesNotExist:
@@ -521,7 +465,6 @@ class ShopUserListView(APIView):
         generated_password = None
 
         if not user:
-            # ⚡ Générer un mot de passe sécurisé si non fourni
             if not password:
                 generated_password = generate_secure_password(10)
                 password = generated_password
@@ -533,7 +476,7 @@ class ShopUserListView(APIView):
                 last_name=last_name,
                 role=role,
                 shop=request.user.shop,
-                must_change_password=True,  # ⚡ Force le changement
+                must_change_password=True,
             )
 
         if ShopUser.objects.filter(shop=request.user.shop, user=user).exists():
@@ -548,10 +491,7 @@ class ShopUserListView(APIView):
             role=role,
         )
 
-        # ⚡ Construire la réponse
         response_data = ShopUserSerializer(member).data
-
-        # ⚡ Si on a généré un mot de passe, le renvoyer UNE SEULE FOIS
         if generated_password:
             response_data['generated_password'] = generated_password
 
@@ -583,6 +523,7 @@ class ShopUserDetailView(APIView):
             )
         return Response(ShopUserSerializer(member).data)
 
+    @transaction.atomic
     def patch(self, request, member_id):
         if get_user_role(request.user) != 'OWNER':
             return Response(
@@ -611,17 +552,21 @@ class ShopUserDetailView(APIView):
                     status=status.HTTP_400_BAD_REQUEST,
                 )
             member.role = new_role
-            # ⚡ Synchroniser User.role
             member.user.role = new_role
             member.user.save(update_fields=['role'])
 
         is_active = request.data.get('is_active')
         if is_active is not None:
             member.is_active = is_active
+            # ⚡ Désactiver aussi le User si la membership devient inactive
+            if not is_active:
+                member.user.is_active = False
+                member.user.save(update_fields=['is_active'])
 
         member.save()
         return Response(ShopUserSerializer(member).data)
 
+    @transaction.atomic
     def delete(self, request, member_id):
         if get_user_role(request.user) != 'OWNER':
             return Response(
@@ -648,124 +593,26 @@ class ShopUserDetailView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # ⚡ Nettoyer User.role pour éviter le fallback
+        user = member.user
         member.delete()
+
+        if not ShopUser.objects.filter(user=user).exists():
+            user.role = 'SELLER'
+            user.shop = None
+            user.save(update_fields=['role', 'shop'])
+
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
-# ═══════════════════════════════════════════════════════════
-# OTP PAR SMS (Orange Developer)
-# ═══════════════════════════════════════════════════════════
-
-from .otp_service import request_otp, verify_otp
-
-
-class RequestOTPView(APIView):
-    """POST /api/v1/auth/request-otp/"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        phone = request.data.get('phone', '').strip()
-
-        if not phone:
-            return Response(
-                {'error': 'Numéro de téléphone requis'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not phone.startswith('+'):
-            return Response(
-                {'error': 'Le numéro doit commencer par +'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if len(phone) < 10:
-            return Response(
-                {'error': 'Numéro trop court'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not User.objects.filter(phone=phone).exists():
-            return Response(
-                {'success': True, 'message': 'Si ce numéro existe, un code a été envoyé'},
-                status=status.HTTP_200_OK,
-            )
-
-        result = request_otp(phone)
-
-        if result.get('success'):
-            return Response(
-                {'success': True, 'message': 'Code envoyé par SMS'},
-                status=status.HTTP_200_OK,
-            )
-        else:
-            return Response(
-                {'error': result.get('error', 'Erreur inconnue')},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-
-class VerifyOTPView(APIView):
-    """POST /api/v1/auth/verify-otp/"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        phone = request.data.get('phone', '').strip()
-        code = request.data.get('code', '').strip()
-
-        if not phone or not code:
-            return Response(
-                {'error': 'Numéro et code requis'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        if not verify_otp(phone, code):
-            return Response(
-                {'error': 'Code invalide ou expiré'},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            user = User.objects.get(phone=phone)
-        except User.DoesNotExist:
-            return Response(
-                {'error': 'Utilisateur introuvable'},
-                status=status.HTTP_404_NOT_FOUND,
-            )
-
-        if not user.is_active:
-            return Response(
-                {'error': 'Ce compte est désactivé'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
-        tokens = get_tokens_for_user(user)
-
-        return Response({
-            'user': UserSerializer(user).data,
-            'tokens': tokens,
-        }, status=status.HTTP_200_OK)
-        
 # ═══════════════════════════════════════════════════════════
 # GESTION DES ABONNEMENTS (ADMIN)
 # ═══════════════════════════════════════════════════════════
 
 class GrantTrialView(APIView):
-    """
-    POST /api/v1/admin/shops/<shop_id>/grant-trial/
-    Body: {"days": 15, "plan": "ESSENTIEL"}
-
-    Accorde un essai gratuit à une boutique.
-    Réservé aux superusers.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def post(self, request, shop_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         try:
             shop = Shop.objects.get(id=shop_id)
         except Shop.DoesNotExist:
@@ -780,7 +627,6 @@ class GrantTrialView(APIView):
         days = serializer.validated_data['days']
         plan = serializer.validated_data['plan']
 
-        # ⚡ Activer l'abonnement
         now = timezone.now()
         shop.subscription_plan = plan
         shop.subscription_status = 'TRIAL'
@@ -799,22 +645,9 @@ class GrantTrialView(APIView):
 
 
 class CancelSubscriptionView(APIView):
-    """
-    POST /api/v1/admin/shops/<shop_id>/cancel-subscription/
-    Body: {"reason": "Paiement non reçu"}
-
-    Annule l'abonnement d'une boutique.
-    Réservé aux superusers.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def post(self, request, shop_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         try:
             shop = Shop.objects.get(id=shop_id)
         except Shop.DoesNotExist:
@@ -827,7 +660,6 @@ class CancelSubscriptionView(APIView):
         serializer.is_valid(raise_exception=True)
         reason = serializer.validated_data['reason']
 
-        # ⚡ Annuler l'abonnement
         shop.subscription_status = 'CANCELLED'
         shop.is_active = False
         shop.cancellation_reason = reason
@@ -842,22 +674,9 @@ class CancelSubscriptionView(APIView):
 
 
 class ReactivateShopView(APIView):
-    """
-    POST /api/v1/admin/shops/<shop_id>/reactivate/
-    Body: {"days": 30}
-
-    Réactive un abonnement annulé/expiré.
-    Réservé aux superusers.
-    """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsSuperUser]
 
     def post(self, request, shop_id):
-        if not request.user.is_superuser:
-            return Response(
-                {'error': 'Accès réservé aux administrateurs'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
-
         try:
             shop = Shop.objects.get(id=shop_id)
         except Shop.DoesNotExist:

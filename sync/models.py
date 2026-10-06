@@ -7,8 +7,18 @@ class SyncLog(models.Model):
         ('SUCCESS', 'Succès'),
         ('FAILED', 'Échec'),
     ]
-    
-    shop = models.ForeignKey('accounts.Shop', on_delete=models.CASCADE, related_name='sync_logs')
+
+    shop = models.ForeignKey(
+        'accounts.Shop', on_delete=models.CASCADE, related_name='sync_logs'
+    )
+    # ⚡ AJOUT : qui a fait l'opération
+    user = models.ForeignKey(
+        'accounts.User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sync_logs',
+    )
     operation_type = models.CharField(max_length=20)
     entity_type = models.CharField(max_length=50)
     entity_id = models.CharField(max_length=100)
@@ -19,6 +29,9 @@ class SyncLog(models.Model):
     class Meta:
         db_table = 'sync_logs'
         ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['shop', '-created_at']),
+        ]
 
     def __str__(self):
         return f'{self.entity_type}/{self.entity_id} — {self.status}'

@@ -2,9 +2,11 @@ import secrets
 import string
 from rest_framework import serializers
 from django.contrib.auth import authenticate
-from .models import User, Shop
-from .models import Payment
-from .models import ShopUser
+from django.contrib.auth.password_validation import validate_password as dj_validate_password
+from django.core.exceptions import ValidationError as DjValidationError
+from django.db import transaction, IntegrityError
+
+from .models import User, Shop, Payment, ShopUser
 
 
 # ═══════════════════════════════════════════════════════════
@@ -17,17 +19,21 @@ def generate_secure_password(length=10):
     return ''.join(secrets.choice(alphabet) for _ in range(length))
 
 
+# ═══════════════════════════════════════════════════════════
+# SHOP
+# ═══════════════════════════════════════════════════════════
+
 class ShopSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shop
         fields = [
             'id', 'name', 'logo_path', 'currency', 'address', 'phone',
             'email', 'owner_name',
-            'subscription_plan', 'subscription_status',  # ⚡ Ajout status
+            'subscription_plan', 'subscription_status',
             'subscription_start', 'subscription_end',
             'last_payment_date',
             'is_active', 'created_at', 'updated_at',
-            'cancellation_reason', 'cancelled_at',  # ⚡ Ajout
+            'cancellation_reason', 'cancelled_at',
         ]
         read_only_fields = [
             'id', 'created_at', 'updated_at',
@@ -35,17 +41,21 @@ class ShopSerializer(serializers.ModelSerializer):
             'subscription_start', 'subscription_end',
             'cancellation_reason', 'cancelled_at',
         ]
-        
-        
+
+
+# ═══════════════════════════════════════════════════════════
+# USER
+# ═══════════════════════════════════════════════════════════
+
 class UserSerializer(serializers.ModelSerializer):
     shop = ShopSerializer(read_only=True)
-    
+
     class Meta:
         model = User
         fields = [
             'id', 'phone', 'first_name', 'last_name', 'role',
             'shop', 'is_active', 'is_superuser', 'is_staff', 'date_joined',
-            'must_change_password',  # ⚡ NOUVEAU
+            'must_change_password',
         ]
         read_only_fields = [
             'id', 'date_joined', 'is_superuser', 'is_staff',
@@ -53,10 +63,14 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
 
+# ═══════════════════════════════════════════════════════════
+# REGISTER
+# ═══════════════════════════════════════════════════════════
+
 class RegisterSerializer(serializers.Serializer):
     """Inscription : crée une boutique + un propriétaire"""
     phone = serializers.CharField(max_length=30)
-    password = serializers.CharField(min_length=6, write_only=True)
+    password = serializers.CharField(min_length=8, write_only=True)
     first_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     last_name = serializers.CharField(max_length=100, required=False, allow_blank=True)
     shop_name = serializers.CharField(max_length=200)
@@ -69,26 +83,49 @@ class RegisterSerializer(serializers.Serializer):
             )
         return value
 
+    def validate_password(self, value):
+        """⚡ Applique les validateurs Django (CommonPassword, Numeric, etc.)"""
+        try:
+            dj_validate_password(value)
+        except DjValidationError as e:
+            raise serializers.ValidationError(' '.join(e.messages))
+        return value
+
+    @transaction.atomic
     def create(self, validated_data):
-        shop = Shop.objects.create(
-            name=validated_data['shop_name'],
-            currency=validated_data.get('currency', 'FCFA'),
-            owner_name=f"{validated_data.get('first_name', '')} {validated_data.get('last_name', '')}".strip(),
-        )
-        
-        user = User.objects.create_user(
-            phone=validated_data['phone'],
-            password=validated_data['password'],
-            first_name=validated_data.get('first_name', ''),
-            last_name=validated_data.get('last_name', ''),
-            role='OWNER',
-            shop=shop,
-            must_change_password=False,  # ⚡ L'OWNER choisit son MDP
-        )
+        try:
+            shop = Shop.objects.create(
+                name=validated_data['shop_name'],
+                currency=validated_data.get('currency', 'FCFA'),
+                owner_name=(
+                    f"{validated_data.get('first_name', '')} "
+                    f"{validated_data.get('last_name', '')}"
+                ).strip(),
+            )
 
-        ShopUser.objects.create(shop=shop, user=user, role='OWNER')
-        return user
+            user = User.objects.create_user(
+                phone=validated_data['phone'],
+                password=validated_data['password'],
+                first_name=validated_data.get('first_name', ''),
+                last_name=validated_data.get('last_name', ''),
+                role='OWNER',
+                shop=shop,
+                must_change_password=False,
+            )
 
+            ShopUser.objects.create(shop=shop, user=user, role='OWNER')
+            return user
+
+        except IntegrityError:
+            # ⚡ Race condition sur le phone → réponse propre
+            raise serializers.ValidationError(
+                {'phone': 'Ce numéro de téléphone est déjà utilisé.'}
+            )
+
+
+# ═══════════════════════════════════════════════════════════
+# LOGIN
+# ═══════════════════════════════════════════════════════════
 
 class LoginSerializer(serializers.Serializer):
     phone = serializers.CharField(max_length=30)
@@ -104,7 +141,7 @@ class LoginSerializer(serializers.Serializer):
             raise serializers.ValidationError('Identifiants invalides.')
         if not user.is_active:
             raise serializers.ValidationError('Ce compte est désactivé.')
-        
+
         data['user'] = user
         return data
 
@@ -116,13 +153,12 @@ class LoginSerializer(serializers.Serializer):
 class ChangePasswordSerializer(serializers.Serializer):
     """Sérialiseur pour changer le mot de passe."""
     old_password = serializers.CharField(write_only=True, required=False)
-    new_password = serializers.CharField(min_length=6, write_only=True)
+    new_password = serializers.CharField(min_length=8, write_only=True)
 
-    def validate_new_password(self, value):
-        if len(value) < 6:
-            raise serializers.ValidationError('Minimum 6 caractères.')
-        return value
 
+# ═══════════════════════════════════════════════════════════
+# SUBSCRIPTION
+# ═══════════════════════════════════════════════════════════
 
 from .subscription_service import SubscriptionService
 
@@ -155,8 +191,9 @@ class SubscriptionPlanSerializer(serializers.Serializer):
 
 
 # ═══════════════════════════════════════════════════════════
-# LISTE DES PLANS DISPONIBLES
+# LISTE DES PLANS
 # ═══════════════════════════════════════════════════════════
+
 PLANS = [
     {
         'code': 'ESSENTIEL',
@@ -203,6 +240,10 @@ PLANS = [
 ]
 
 
+# ═══════════════════════════════════════════════════════════
+# PAYMENT
+# ═══════════════════════════════════════════════════════════
+
 class PaymentSerializer(serializers.ModelSerializer):
     plan_name = serializers.SerializerMethodField()
     method_name = serializers.SerializerMethodField()
@@ -246,12 +287,15 @@ class PaymentSerializer(serializers.ModelSerializer):
         return names.get(obj.method, obj.method)
 
 
+# ═══════════════════════════════════════════════════════════
+# SHOP USER
+# ═══════════════════════════════════════════════════════════
+
 class ShopUserSerializer(serializers.ModelSerializer):
     user_id = serializers.IntegerField(source='user.id', read_only=True)
     phone = serializers.CharField(source='user.phone', read_only=True)
     first_name = serializers.CharField(source='user.first_name', read_only=True)
     last_name = serializers.CharField(source='user.last_name', read_only=True)
-    is_superuser = serializers.BooleanField(source='user.is_superuser', read_only=True)
     must_change_password = serializers.BooleanField(
         source='user.must_change_password',
         read_only=True,
@@ -261,8 +305,7 @@ class ShopUserSerializer(serializers.ModelSerializer):
         model = ShopUser
         fields = [
             'id', 'user_id', 'phone', 'first_name', 'last_name',
-            'role', 'is_active', 'is_superuser',
-            'must_change_password',  # ⚡ NOUVEAU
+            'role', 'is_active', 'must_change_password',
             'permissions', 'created_at',
         ]
         read_only_fields = ['id', 'created_at']
@@ -277,9 +320,9 @@ class AddShopUserSerializer(serializers.Serializer):
         choices=['MANAGER', 'SELLER', 'ACCOUNTANT'],
         default='SELLER',
     )
-    password = serializers.CharField(min_length=6, write_only=True, required=False)
-    
-    
+    password = serializers.CharField(min_length=8, write_only=True, required=False)
+
+
 # ═══════════════════════════════════════════════════════════
 # ACTIONS ADMIN SUR LES ABONNEMENTS
 # ═══════════════════════════════════════════════════════════

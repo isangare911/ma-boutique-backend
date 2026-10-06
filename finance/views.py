@@ -2,6 +2,7 @@ from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
+from django.db import transaction
 from django.db.models import Sum
 from django.utils import timezone
 
@@ -18,6 +19,19 @@ from accounts.permissions import (
 )
 
 
+# ═══════════════════════════════════════════════════════════
+# HELPERS
+# ═══════════════════════════════════════════════════════════
+
+def _user_has_shop(request):
+    """Vérifie que l'utilisateur a une boutique associée."""
+    return bool(getattr(request.user, 'shop', None))
+
+
+# ═══════════════════════════════════════════════════════════
+# VIEWSETS
+# ═══════════════════════════════════════════════════════════
+
 class CashSessionViewSet(viewsets.ModelViewSet):
     """
     Caisse : OWNER, MANAGER, ACCOUNTANT (lecture et écriture)
@@ -33,23 +47,30 @@ class CashSessionViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        # ⚡ Garde-fou : si pas de shop, queryset vide (pas 500)
+        if not _user_has_shop(self.request):
+            return CashSession.objects.none()
         return CashSession.objects.filter(shop=self.request.user.shop)
 
     def perform_create(self, serializer):
         serializer.save(shop=self.request.user.shop)
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def add_movement(self, request, pk=None):
-        session = self.get_object()
+        session = self.get_object()  # ⚡ déjà filtré par shop
         if session.status != 'OPEN':
             return Response({'error': 'La caisse est fermée'}, status=400)
 
         serializer = CashMovementSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+
+        # ⚡ Forcer session + type côté serveur, ignorer tout autre champ
         serializer.save(session=session)
         return Response(serializer.data, status=201)
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def close(self, request, pk=None):
         session = self.get_object()
         if session.status == 'CLOSED':
@@ -59,13 +80,22 @@ class CashSessionViewSet(viewsets.ModelViewSet):
         if closing is None:
             return Response({'error': 'closing_balance requis'}, status=400)
 
-        total_in = session.movements.filter(type='IN').aggregate(t=Sum('amount'))['t'] or 0
-        total_out = session.movements.filter(type='OUT').aggregate(t=Sum('amount'))['t'] or 0
-        theoretical = session.opening_balance + total_in - total_out
+        try:
+            closing = float(closing)
+        except (TypeError, ValueError):
+            return Response({'error': 'closing_balance invalide'}, status=400)
+
+        total_in = session.movements.filter(type='IN').aggregate(
+            t=Sum('amount')
+        )['t'] or 0
+        total_out = session.movements.filter(type='OUT').aggregate(
+            t=Sum('amount')
+        )['t'] or 0
+        theoretical = float(session.opening_balance) + float(total_in) - float(total_out)
 
         session.closing_balance = closing
         session.theoretical_balance = theoretical
-        session.difference = float(closing) - float(theoretical)
+        session.difference = closing - theoretical
         session.closed_at = timezone.now()
         session.status = 'CLOSED'
         session.save()
@@ -87,6 +117,8 @@ class ExpenseViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        if not _user_has_shop(self.request):
+            return Expense.objects.none()
         qs = Expense.objects.filter(shop=self.request.user.shop)
         category = self.request.query_params.get('category')
         if category:
@@ -111,6 +143,8 @@ class SupplierViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        if not _user_has_shop(self.request):
+            return Supplier.objects.none()
         qs = Supplier.objects.filter(shop=self.request.user.shop)
         search = self.request.query_params.get('search')
         if search:
@@ -121,8 +155,9 @@ class SupplierViewSet(viewsets.ModelViewSet):
         serializer.save(shop=self.request.user.shop)
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def add_transaction(self, request, pk=None):
-        supplier = self.get_object()
+        supplier = self.get_object()  # ⚡ déjà filtré par shop
         serializer = SupplierTransactionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         serializer.save(supplier=supplier)

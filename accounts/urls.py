@@ -3,19 +3,19 @@ from django.urls import path
 from .views import (
     # Auth
     RegisterView, LoginView, MeView, ShopSettingsView,
-    
+
     # Abonnement
-    SubscriptionStatusView, SubscriptionPlansView, SubscriptionActivateView,
-    
+    SubscriptionStatusView, SubscriptionPlansView,
+
     # Paiements (client)
     CreatePaymentView, SubmitPaymentProofView,
     CancelPaymentView, PaymentListView,
-    
+
     # Admin (propriétaire)
     AdminStatsView, AdminShopsView, AdminPaymentsView,
     AdminApprovePaymentView, AdminRejectPaymentView,
     ShopUserListView, ShopUserDetailView, AdminShopPaymentsView,
-    RequestOTPView, VerifyOTPView, ChangePasswordView,
+    ChangePasswordView,
     GrantTrialView,
     CancelSubscriptionView,
     ReactivateShopView,
@@ -37,8 +37,8 @@ urlpatterns = [
     # ═══════════════════════════════════════════════════════
     path('subscription/status/', SubscriptionStatusView.as_view(), name='sub-status'),
     path('subscription/plans/', SubscriptionPlansView.as_view(), name='sub-plans'),
-    path('subscription/activate/', SubscriptionActivateView.as_view(), name='sub-activate'),
-    
+    # ⚡ SUPPRIMÉ : subscription/activate/ (faille d'escalade)
+
     # Multi-utilisateurs
     path('shop/users/', ShopUserListView.as_view(), name='shop-users'),
     path('shop/users/<str:member_id>/', ShopUserDetailView.as_view(), name='shop-user-detail'),
@@ -48,26 +48,25 @@ urlpatterns = [
     # ═══════════════════════════════════════════════════════
     path('payments/', PaymentListView.as_view(), name='payments-list'),
     path('payments/create/', CreatePaymentView.as_view(), name='payment-create'),
-    
-    # ⚡ NOUVELLE ROUTE : Soumettre la preuve
     path(
         'payments/<str:payment_id>/submit/',
         SubmitPaymentProofView.as_view(),
         name='payment-submit',
     ),
-    
-    path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
-    
     path(
         'payments/<str:payment_id>/cancel/',
         CancelPaymentView.as_view(),
         name='payment-cancel',
     ),
-    path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),
-    path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
+
+    path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
+
+    # ⚡ OTP désactivé (tu ne l'utilises pas)
+    # path('auth/request-otp/', RequestOTPView.as_view(), name='request-otp'),
+    # path('auth/verify-otp/', VerifyOTPView.as_view(), name='verify-otp'),
 
     # ═══════════════════════════════════════════════════════
-    # ADMIN (propriétaire de l'app)
+    # ADMIN
     # ═══════════════════════════════════════════════════════
     path('admin/stats/', AdminStatsView.as_view(), name='admin-stats'),
     path('admin/shops/', AdminShopsView.as_view(), name='admin-shops'),
@@ -83,15 +82,14 @@ urlpatterns = [
         name='admin-reject',
     ),
     path(
-    'admin/shops/<str:shop_id>/payments/',
-    AdminShopPaymentsView.as_view(),
-    name='admin-shop-payments',
+        'admin/shops/<str:shop_id>/payments/',
+        AdminShopPaymentsView.as_view(),
+        name='admin-shop-payments',
     ),
-    
     path(
-    'admin/shops/<str:shop_id>/grant-trial/',
-    GrantTrialView.as_view(),
-    name='admin-grant-trial',
+        'admin/shops/<str:shop_id>/grant-trial/',
+        GrantTrialView.as_view(),
+        name='admin-grant-trial',
     ),
     path(
         'admin/shops/<str:shop_id>/cancel-subscription/',

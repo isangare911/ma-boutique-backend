@@ -1,8 +1,14 @@
 from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
+from django.db.models import F
+
 from .models import Product
 from .serializers import ProductSerializer
 from accounts.permissions import IsSameShop, CanViewStock, CanEditStock
+
+
+def _user_has_shop(request):
+    return bool(getattr(request.user, 'shop', None))
 
 
 class ProductViewSet(viewsets.ModelViewSet):
@@ -22,6 +28,9 @@ class ProductViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        if not _user_has_shop(self.request):
+            return Product.objects.none()
+
         qs = Product.objects.filter(shop=self.request.user.shop)
 
         search = self.request.query_params.get('search')
@@ -34,7 +43,6 @@ class ProductViewSet(viewsets.ModelViewSet):
 
         low_stock = self.request.query_params.get('low_stock')
         if low_stock == 'true':
-            from django.db.models import F
             qs = qs.filter(quantity__lte=F('alert_threshold'))
 
         return qs

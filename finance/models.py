@@ -1,5 +1,7 @@
 from django.db import models
 from django.utils import timezone
+from django.core.validators import MinValueValidator
+from decimal import Decimal
 import uuid
 
 
@@ -12,13 +14,23 @@ class CashSession(models.Model):
         ('OPEN', 'Ouverte'),
         ('CLOSED', 'Fermée'),
     ]
-    
+
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     shop = models.ForeignKey('accounts.Shop', on_delete=models.CASCADE, related_name='cash_sessions')
-    opening_balance = models.DecimalField(max_digits=12, decimal_places=2)
-    closing_balance = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    theoretical_balance = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
-    difference = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    opening_balance = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    closing_balance = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    theoretical_balance = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
+    difference = models.DecimalField(
+        max_digits=12, decimal_places=2, null=True, blank=True,
+    )
     opened_at = models.DateTimeField(default=timezone.now)
     closed_at = models.DateTimeField(null=True, blank=True)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='OPEN')
@@ -42,11 +54,14 @@ class CashMovement(models.Model):
         ('IN', 'Entrée'),
         ('OUT', 'Sortie'),
     ]
-    
+
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     session = models.ForeignKey(CashSession, on_delete=models.CASCADE, related_name='movements')
     type = models.CharField(max_length=10, choices=TYPE_CHOICES)
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],  # ⚡ > 0
+    )
     category = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(default=timezone.now)
@@ -71,7 +86,10 @@ class Expense(models.Model):
     """Dépense du commerce"""
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     shop = models.ForeignKey('accounts.Shop', on_delete=models.CASCADE, related_name='expenses')
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
     category = models.CharField(max_length=100)
     description = models.TextField(blank=True, null=True)
     expense_date = models.DateTimeField(default=timezone.now, null=True, blank=True)
@@ -125,11 +143,14 @@ class SupplierTransaction(models.Model):
         ('PAYMENT', 'Paiement'),
         ('DEBT', 'Dette'),
     ]
-    
+
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     supplier = models.ForeignKey(Supplier, on_delete=models.CASCADE, related_name='transactions')
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+    )
     description = models.TextField(blank=True, null=True)
     transaction_date = models.DateTimeField(default=timezone.now)
     created_at = models.DateTimeField(auto_now_add=True)

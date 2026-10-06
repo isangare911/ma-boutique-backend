@@ -1,5 +1,7 @@
 from django.db import models
 from django.utils import timezone
+from django.core.validators import MinValueValidator
+from decimal import Decimal
 import uuid
 
 
@@ -34,7 +36,7 @@ class Credit(models.Model):
         ('ACTIVE', 'En cours'),
         ('PAID', 'Payé'),
     ]
-    
+
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     shop = models.ForeignKey(
         'accounts.Shop', on_delete=models.CASCADE, related_name='credits'
@@ -42,8 +44,14 @@ class Credit(models.Model):
     customer = models.ForeignKey(
         Customer, on_delete=models.CASCADE, related_name='credits'
     )
-    total_amount = models.DecimalField(max_digits=12, decimal_places=2)
-    paid_amount = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    total_amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
+    paid_amount = models.DecimalField(
+        max_digits=12, decimal_places=2, default=0,
+        validators=[MinValueValidator(Decimal('0'))],
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     due_date = models.DateTimeField()
     notes = models.TextField(blank=True, null=True)
@@ -60,12 +68,18 @@ class Credit(models.Model):
     def __str__(self):
         return f'{self.customer.name} — {self.total_amount}'
 
+    def recalculate_status(self):
+        """⚡ Recalcule le statut dans les DEUX sens."""
+        if self.paid_amount >= self.total_amount and self.total_amount > 0:
+            self.status = 'PAID'
+        else:
+            self.status = 'ACTIVE'
+
     def save(self, *args, **kwargs):
         if not self.id:
             self.id = f'CRED-{uuid.uuid4().hex[:12].upper()}'
-        # Mise à jour automatique du statut
-        if self.paid_amount >= self.total_amount:
-            self.status = 'PAID'
+        # ⚡ Toujours recalculer le statut (réversible)
+        self.recalculate_status()
         super().save(*args, **kwargs)
 
     @property
@@ -88,7 +102,10 @@ class CreditPayment(models.Model):
     """Remboursement d'un crédit"""
     id = models.CharField(max_length=50, primary_key=True, editable=False)
     credit = models.ForeignKey(Credit, on_delete=models.CASCADE, related_name='payments')
-    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    amount = models.DecimalField(
+        max_digits=12, decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],  # ⚡ > 0 obligatoire
+    )
     payment_method = models.CharField(max_length=50)
     payment_date = models.DateTimeField(default=timezone.now)
     comment = models.TextField(blank=True, null=True)
@@ -104,3 +121,20 @@ class CreditPayment(models.Model):
         if not self.id:
             self.id = f'PAY-{uuid.uuid4().hex[:12].upper()}'
         super().save(*args, **kwargs)
+
+        # ⚡ Recalculer paid_amount + statut du crédit parent
+        total_paid = self.credit.payments.aggregate(
+            total=models.Sum('amount')
+        )['total'] or Decimal('0')
+        self.credit.paid_amount = total_paid
+        self.credit.save(update_fields=['paid_amount', 'status'])
+
+    def delete(self, *args, **kwargs):
+        credit = self.credit
+        super().delete(*args, **kwargs)
+        # ⚡ Recalculer après suppression
+        total_paid = credit.payments.aggregate(
+            total=models.Sum('amount')
+        )['total'] or Decimal('0')
+        credit.paid_amount = total_paid
+        credit.save(update_fields=['paid_amount', 'status'])

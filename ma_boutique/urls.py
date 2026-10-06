@@ -3,9 +3,24 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from ma_boutique.views import healthz, readyz
+
 
 urlpatterns = [
+    # ═══════════════════════════════════════════════════════
+    # HEALTHCHECK
+    # ═══════════════════════════════════════════════════════
+    path('healthz/', healthz, name='healthz'),   # liveness
+    path('readyz/', readyz, name='readyz'),      # readiness (DB)
+
+    # ═══════════════════════════════════════════════════════
+    # ADMIN
+    # ═══════════════════════════════════════════════════════
     path('admin/', admin.site.urls),
+
+    # ═══════════════════════════════════════════════════════
+    # API v1
+    # ═══════════════════════════════════════════════════════
     path('api/v1/', include('accounts.urls')),
     path('api/v1/', include('inventory.urls')),
     path('api/v1/', include('sales.urls')),

@@ -2,7 +2,9 @@ from rest_framework import viewsets
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from django.db.models import F
+from django.db import transaction
+from django.utils import timezone
+from decimal import Decimal, InvalidOperation
 
 from .models import Customer, Credit, CreditPayment
 from .serializers import (
@@ -14,9 +16,13 @@ from accounts.permissions import (
 )
 
 
+def _user_has_shop(request):
+    return bool(getattr(request.user, 'shop', None))
+
+
 class CustomerViewSet(viewsets.ModelViewSet):
     """
-    Clients : 
+    Clients :
     - Lecture : OWNER, MANAGER, SELLER, ACCOUNTANT
     - Écriture : OWNER, MANAGER, SELLER
     """
@@ -30,6 +36,9 @@ class CustomerViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        # ⚡ Garde-fou : pas de shop → queryset vide
+        if not _user_has_shop(self.request):
+            return Customer.objects.none()
         qs = Customer.objects.filter(shop=self.request.user.shop)
         search = self.request.query_params.get('search')
         if search:
@@ -60,6 +69,9 @@ class CreditViewSet(viewsets.ModelViewSet):
         return [c() for c in classes]
 
     def get_queryset(self):
+        if not _user_has_shop(self.request):
+            return Credit.objects.none()
+
         qs = Credit.objects.filter(shop=self.request.user.shop)
 
         status = self.request.query_params.get('status')
@@ -68,7 +80,6 @@ class CreditViewSet(viewsets.ModelViewSet):
 
         overdue = self.request.query_params.get('overdue')
         if overdue == 'true':
-            from django.utils import timezone
             qs = qs.filter(status='ACTIVE', due_date__lt=timezone.now())
 
         customer_id = self.request.query_params.get('customer')
@@ -78,31 +89,41 @@ class CreditViewSet(viewsets.ModelViewSet):
         return qs.select_related('customer').prefetch_related('payments')
 
     @action(detail=True, methods=['post'])
+    @transaction.atomic
     def pay(self, request, pk=None):
         """Enregistrer un remboursement"""
         credit = self.get_object()
-        amount = request.data.get('amount')
-        payment_method = request.data.get('payment_method', 'Espèces')
 
-        if not amount or float(amount) <= 0:
+        raw_amount = request.data.get('amount')
+        payment_method = request.data.get('payment_method', 'Espèces')
+        comment = request.data.get('comment', '')
+
+        # ⚡ Utiliser Decimal, pas float
+        try:
+            amount = Decimal(str(raw_amount))
+        except (InvalidOperation, TypeError, ValueError):
             return Response({'error': 'Montant invalide'}, status=400)
 
-        amount = float(amount)
-        if amount > float(credit.remaining_amount):
+        if amount <= 0:
+            return Response({'error': 'Le montant doit être positif'}, status=400)
+
+        if amount > credit.remaining_amount:
             return Response(
                 {'error': f'Le montant ne peut pas dépasser {credit.remaining_amount}'},
                 status=400,
             )
 
-        payment = CreditPayment.objects.create(
+        # ⚡ Verrouiller le credit pour éviter les doubles paiements concurrents
+        credit = Credit.objects.select_for_update().get(id=credit.id)
+
+        # ⚡ Créer le paiement : CreditPayment.save() recalcule paid_amount
+        # automatiquement (via modèle customers) → PAS de mise à jour manuelle !
+        CreditPayment.objects.create(
             credit=credit,
             amount=amount,
             payment_method=payment_method,
-            comment=request.data.get('comment', ''),
+            comment=comment,
         )
 
-        credit.paid_amount = F('paid_amount') + amount
-        credit.save()
         credit.refresh_from_db()
-
         return Response(CreditSerializer(credit).data)

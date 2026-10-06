@@ -19,9 +19,11 @@ class CreditPaymentSerializer(serializers.ModelSerializer):
 class CreditSerializer(serializers.ModelSerializer):
     customer_detail = CustomerSerializer(source='customer', read_only=True)
     payments = CreditPaymentSerializer(many=True, read_only=True)
-    remaining_amount = serializers.DecimalField(max_digits=12, decimal_places=2, read_only=True)
+    remaining_amount = serializers.DecimalField(
+        max_digits=12, decimal_places=2, read_only=True
+    )
     is_overdue = serializers.BooleanField(read_only=True)
-    
+
     class Meta:
         model = Credit
         fields = [
@@ -30,7 +32,24 @@ class CreditSerializer(serializers.ModelSerializer):
             'created_at', 'due_date', 'notes', 'status',
             'payments',
         ]
-        read_only_fields = ['created_at', 'status']
+        read_only_fields = [
+            'id', 'created_at', 'status',
+            'paid_amount',      # ⚡ calculé automatiquement
+            'remaining_amount', # ⚡ property
+            'is_overdue',       # ⚡ property
+        ]
+
+    def validate_customer(self, customer):
+        """⚡ Vérifier que le customer appartient à la boutique de l'utilisateur."""
+        request = self.context.get('request')
+        if request and customer.shop_id != request.user.shop_id:
+            raise serializers.ValidationError(
+                'Ce client n\'appartient pas à votre boutique.'
+            )
+        return customer
 
     def create(self, validated_data):
-        return Credit.objects.create(shop=self.context['request'].user.shop, **validated_data)
+        return Credit.objects.create(
+            shop=self.context['request'].user.shop,
+            **validated_data,
+        )

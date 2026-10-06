@@ -3,6 +3,7 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from rest_framework import status
 from django.utils import timezone
+from django.db import transaction
 
 from .serializers import SyncRequestSerializer
 from .models import SyncLog
@@ -19,7 +20,6 @@ class SyncView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # 🔒 Vérifier le rôle
         role = get_user_role(request.user)
         if role not in ('OWNER', 'MANAGER'):
             return Response(
@@ -46,7 +46,9 @@ class SyncView(APIView):
 
         for op in operations:
             try:
-                self._process_operation(request.user, op)
+                with transaction.atomic():
+                    self._process_operation(request.user, op)
+
                 results.append({
                     'entity_id': op['entity_id'],
                     'success': True,
@@ -55,6 +57,7 @@ class SyncView(APIView):
 
                 SyncLog.objects.create(
                     shop=request.user.shop,
+                    user=request.user,
                     operation_type=op['operation_type'],
                     entity_type=op['entity_type'],
                     entity_id=op['entity_id'],
@@ -70,6 +73,7 @@ class SyncView(APIView):
 
                 SyncLog.objects.create(
                     shop=request.user.shop,
+                    user=request.user,
                     operation_type=op['operation_type'],
                     entity_type=op['entity_type'],
                     entity_id=op['entity_id'],
@@ -92,14 +96,33 @@ class SyncView(APIView):
 
     def _check_no_conflict(self, model, entity_id, shop, entity_label):
         """
-        ⚡ Vérifie que l'entité n'appartient pas déjà à une autre boutique.
-        Empêche qu'un user écrase les données d'une autre boutique.
+        Vérifie que l'entité n'appartient pas déjà à une autre boutique.
         """
         existing = model.objects.filter(id=entity_id).first()
         if existing and existing.shop_id != shop.id:
             raise Exception(
                 f'Conflit : {entity_label} {entity_id} appartient à une autre boutique'
             )
+
+    def _check_customer_belongs(self, shop, customer_id):
+        """Vérifie qu'un customer_id appartient bien à la boutique."""
+        if not customer_id:
+            return None
+        from customers.models import Customer
+        customer = Customer.objects.filter(id=customer_id, shop=shop).first()
+        if not customer:
+            raise Exception(f'Client {customer_id} introuvable pour cette boutique')
+        return customer
+
+    def _check_product_belongs(self, shop, product_id):
+        """Vérifie qu'un product_id appartient bien à la boutique."""
+        if not product_id:
+            return None
+        from inventory.models import Product
+        product = Product.objects.filter(id=product_id, shop=shop).first()
+        if not product:
+            raise Exception(f'Produit {product_id} introuvable pour cette boutique')
+        return product
 
     # ═══════════════════════════════════════════════════════════
     # ROUTEUR
@@ -141,30 +164,37 @@ class SyncView(APIView):
 
     def _handle_product(self, shop, op_type, entity_id, payload):
         from inventory.models import Product
+
         if op_type == 'DELETE':
             Product.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(Product, entity_id, shop, 'le produit')
+
+        # ⚡ Clamp : ne jamais accepter une quantité négative
+        allowed = {}
+        for k, v in payload.items():
+            if k == 'quantity':
+                try:
+                    v = max(0, int(v))
+                except (TypeError, ValueError):
+                    v = 0
+            if k in ['name', 'reference', 'barcode', 'category',
+                    'purchase_price', 'selling_price', 'quantity',
+                    'alert_threshold', 'unit']:
+                allowed[k] = v
 
         Product.objects.update_or_create(
             id=entity_id,
-            defaults={'shop': shop, **{
-                k: v for k, v in payload.items()
-                if k in ['name', 'reference', 'barcode', 'category',
-                         'purchase_price', 'selling_price', 'quantity',
-                         'alert_threshold', 'unit']
-            }},
+            defaults={'shop': shop, **allowed},
         )
-
+    
     def _handle_customer(self, shop, op_type, entity_id, payload):
         from customers.models import Customer
         if op_type == 'DELETE':
             Customer.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(Customer, entity_id, shop, 'le client')
 
         Customer.objects.update_or_create(
@@ -177,32 +207,95 @@ class SyncView(APIView):
 
     def _handle_sale(self, shop, op_type, entity_id, payload):
         from sales.models import Sale, SaleItem
+        from inventory.models import Product
+        from django.db.models import F
+        from decimal import Decimal
+
+        # ═══════════════════════════════════════════════════════
+        # DELETE
+        # ═══════════════════════════════════════════════════════
         if op_type == 'DELETE':
             Sale.objects.filter(id=entity_id, shop=shop).delete()
             return
+
+        # ═══════════════════════════════════════════════════════
+        # UPDATE + CANCELLED → restaurer le stock
+        # ═══════════════════════════════════════════════════════
         if op_type == 'UPDATE' and payload.get('status') == 'CANCELLED':
-            Sale.objects.filter(id=entity_id, shop=shop).update(status='CANCELLED')
+            sale = Sale.objects.filter(id=entity_id, shop=shop).first()
+            if not sale:
+                return
+            if sale.status == 'CANCELLED':
+                return
+
+            items = payload.get('items') or []
+            if items:
+                for item in items:
+                    product_id = item.get('product_id')
+                    quantity = item.get('quantity', 0)
+                    if product_id and quantity:
+                        Product.objects.filter(
+                            id=product_id, shop=shop
+                        ).update(quantity=F('quantity') + quantity)
+            else:
+                for sale_item in sale.items.all():
+                    if sale_item.product_id:
+                        Product.objects.filter(
+                            id=sale_item.product_id, shop=shop
+                        ).update(quantity=F('quantity') + sale_item.quantity)
+
+            sale.status = 'CANCELLED'
+            sale.save(update_fields=['status'])
             return
+
+        # ═══════════════════════════════════════════════════════
+        # CREATE
+        # ═══════════════════════════════════════════════════════
         if op_type == 'CREATE':
-            # ⚡ Vérifier le conflit
             self._check_no_conflict(Sale, entity_id, shop, 'la vente')
+
+            customer = self._check_customer_belongs(
+                shop, payload.get('customer_id')
+            )
+
+            # Calculer totals
+            total_amount = Decimal('0')
+            total_profit = Decimal('0')
+
+            for item in payload.get('items', []):
+                unit_price = Decimal(str(item.get('unit_price', 0) or 0))
+                purchase_price = Decimal(
+                    str(item.get('purchase_price', 0) or 0)
+                )
+                quantity = int(item.get('quantity', 0) or 0)
+
+                total_amount += unit_price * quantity
+                total_profit += (unit_price - purchase_price) * quantity
 
             sale, _ = Sale.objects.update_or_create(
                 id=entity_id,
                 defaults={
                     'shop': shop,
-                    'customer_id': payload.get('customer_id'),
-                    'total_amount': payload.get('total_amount', 0),
-                    'payment_method': payload.get('payment_method', 'Espèces'),
+                    'customer': customer,
+                    'total_amount': total_amount,
+                    'total_profit': total_profit,
+                    'payment_method': payload.get(
+                        'payment_method', 'Espèces'
+                    ),
                     'status': payload.get('status', 'COMPLETED'),
                 },
             )
+
             for item in payload.get('items', []):
+                product = self._check_product_belongs(
+                    shop, item.get('product_id')
+                )
+
                 SaleItem.objects.update_or_create(
                     id=item['id'],
                     defaults={
                         'sale': sale,
-                        'product_id': item.get('product_id'),
+                        'product': product,
                         'product_name': item['product_name'],
                         'unit_price': item['unit_price'],
                         'purchase_price': item.get('purchase_price', 0),
@@ -210,20 +303,30 @@ class SyncView(APIView):
                     },
                 )
 
+                # ⚡ Décrémenter le stock côté serveur
+                if product and item.get('quantity', 0) > 0:
+                    Product.objects.filter(
+                        id=product.id, shop=shop
+                    ).update(quantity=F('quantity') - item['quantity'])
+
     def _handle_credit(self, shop, op_type, entity_id, payload):
         from customers.models import Credit
         if op_type == 'DELETE':
             Credit.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(Credit, entity_id, shop, 'le crédit')
+
+        # ⚡ Vérifier que le customer appartient à la boutique
+        customer = self._check_customer_belongs(shop, payload.get('customer_id'))
+        if not customer:
+            raise Exception('customer_id manquant pour le crédit')
 
         Credit.objects.update_or_create(
             id=entity_id,
             defaults={
                 'shop': shop,
-                'customer_id': payload['customer_id'],
+                'customer': customer,
                 'total_amount': payload['total_amount'],
                 'paid_amount': payload.get('paid_amount', 0),
                 'due_date': payload['due_date'],
@@ -232,11 +335,25 @@ class SyncView(APIView):
         )
 
     def _handle_credit_payment(self, shop, op_type, entity_id, payload):
-        from customers.models import CreditPayment
+        from customers.models import Credit, CreditPayment
+
+        # ⚡ Vérifier que le crédit appartient bien à la boutique
+        credit_id = payload.get('credit_id')
+        if not credit_id:
+            raise Exception('credit_id manquant')
+
+        credit = Credit.objects.filter(id=credit_id, shop=shop).first()
+        if not credit:
+            raise Exception(f'Crédit {credit_id} introuvable pour cette boutique')
+
+        if op_type == 'DELETE':
+            CreditPayment.objects.filter(id=entity_id, credit=credit).delete()
+            return
+
         CreditPayment.objects.update_or_create(
             id=entity_id,
             defaults={
-                'credit_id': payload['credit_id'],
+                'credit': credit,
                 'amount': payload['amount'],
                 'payment_method': payload.get('payment_method', 'Espèces'),
                 'payment_date': payload.get('date'),
@@ -252,7 +369,6 @@ class SyncView(APIView):
             Expense.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(Expense, entity_id, shop, 'la dépense')
 
         expense_date = payload.get('expense_date')
@@ -279,7 +395,6 @@ class SyncView(APIView):
             Supplier.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(Supplier, entity_id, shop, 'le fournisseur')
 
         Supplier.objects.update_or_create(
@@ -328,7 +443,6 @@ class SyncView(APIView):
             CashSession.objects.filter(id=entity_id, shop=shop).delete()
             return
 
-        # ⚡ Vérifier le conflit
         self._check_no_conflict(CashSession, entity_id, shop, 'la session de caisse')
 
         opened_at = payload.get('opened_at')
