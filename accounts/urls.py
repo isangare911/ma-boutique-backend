@@ -20,6 +20,8 @@ from .views import (
     CancelSubscriptionView,
     ReactivateShopView,
 )
+from rest_framework_simplejwt.views import TokenRefreshView
+
 
 app_name = 'accounts'
 
@@ -30,6 +32,7 @@ urlpatterns = [
     path('auth/register/', RegisterView.as_view(), name='register'),
     path('auth/login/', LoginView.as_view(), name='login'),
     path('auth/me/', MeView.as_view(), name='me'),
+    path('auth/token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('shop/', ShopSettingsView.as_view(), name='shop-settings'),
 
     # ═══════════════════════════════════════════════════════
