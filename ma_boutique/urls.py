@@ -4,11 +4,9 @@ from django.conf import settings
 from django.conf.urls.static import static
 
 from ma_boutique.views import healthz, readyz
-from django.http import HttpResponse
 
 
-def sentry_test(request):
-    raise Exception("Test Sentry Backend — " + str(request.META.get('REMOTE_ADDR')))
+
 
 urlpatterns = [
     # ═══════════════════════════════════════════════════════
@@ -31,7 +29,7 @@ urlpatterns = [
     path('api/v1/', include('customers.urls')),
     path('api/v1/', include('finance.urls')),
     path('api/v1/', include('sync.urls')),
-    path('sentry-test/', sentry_test),
+    
 ]
 
 # En dev : servir les médias et statiques
